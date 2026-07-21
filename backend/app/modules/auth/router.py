@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Cookie, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, Request, Response, status
 
 from app.core.errors import UnauthorizedError
+from app.core.rate_limit import auth_rate_limiter
 from app.modules.auth.cookies import (
     REFRESH_COOKIE_NAME, clear_refresh_cookie, set_refresh_cookie,
 )
@@ -10,20 +11,29 @@ from app.modules.users.schemas import UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-def _client_key(request: Request, prefix: str) -> str:
-    host = request.client.host if request.client else "unknown"
-    return f"{prefix}:{host}"
+
+def _check_rate_limit(request: Request) -> None:
+    auth_rate_limiter.check(request)
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: RegisterRequest, auth: AuthServiceDep, request: Request) -> UserResponse:
+@router.post(
+    "/register",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_check_rate_limit)],
+)
+async def register(payload: RegisterRequest, auth: AuthServiceDep) -> UserResponse:
     user = await auth.register(payload)
     return UserResponse.model_validate(user)
 
 
-@router.post("/login", response_model=AccessTokenResponse)
+@router.post(
+    "/login",
+    response_model=AccessTokenResponse,
+    dependencies=[Depends(_check_rate_limit)],
+)
 async def login(
-    payload: LoginRequest, auth: AuthServiceDep, request: Request, response: Response,
+    payload: LoginRequest, auth: AuthServiceDep, response: Response,
 ) -> AccessTokenResponse:
     _, access_token, refresh_token = await auth.login(payload)
     set_refresh_cookie(response, refresh_token)
@@ -32,7 +42,7 @@ async def login(
 
 @router.post("/refresh", response_model=AccessTokenResponse)
 async def refresh(
-    auth: AuthServiceDep, request: Request, response: Response,
+    auth: AuthServiceDep, response: Response,
     refresh_token: str | None = Cookie(default=None, alias=REFRESH_COOKIE_NAME),
 ) -> AccessTokenResponse:
     if not refresh_token:

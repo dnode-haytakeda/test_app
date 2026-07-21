@@ -20,6 +20,12 @@ async def _check_database() -> bool:
         return False
     return True
 
+
+@router.get("/live", response_model=LivenessResponse)
+async def liveness() -> LivenessResponse:
+    return LivenessResponse(status="ok")
+
+
 @router.get("", response_model=HealthCheck)
 async def health() -> HealthCheck:
     db_ok = await _check_database()

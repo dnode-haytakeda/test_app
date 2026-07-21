@@ -24,7 +24,7 @@ class RefreshTokenDenylistRepository(BaseRepository[RevokedRefreshToken]):
     def __init__(self, session: AsyncSession) -> None:
         super().__init__(session)
     
-    async def revoke_if_ative(
+    async def revoke_if_active(
             self,
             *,
             jti: str,

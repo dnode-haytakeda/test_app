@@ -44,6 +44,7 @@ class AuthService(BaseService):
             email=email,
             hashed_password=hash_password(data.password),
             full_name=data.full_name,
+            is_active=True,
         )
         return await self._users.create(user)
     
@@ -76,7 +77,7 @@ class AuthService(BaseService):
         if user is None or not user.is_active:
             raise UnauthorizedError("Invalid refresh token")
         
-        revoked = await self._denylist.revoke_if_ative(
+        revoked = await self._denylist.revoke_if_active(
             jti=jti,
             user_id=user.id,
             expires_at=expires_at,
@@ -98,7 +99,7 @@ class AuthService(BaseService):
         if user is None:
             return
         
-        await self._denylist.revoke_if_ative(
+        await self._denylist.revoke_if_active(
             jti=jti,
             user_id=user.id,
             expires_at=expires_at,

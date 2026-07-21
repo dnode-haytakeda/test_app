@@ -1,18 +1,14 @@
-import asyncio
 from collections.abc import AsyncGenerator
 
-import structlog
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import settings
-
-logger = structlog.get_logger()
 
 engine = create_async_engine(
     settings.database_url,
     pool_size=settings.DATABASE_POOL_SIZE,
     max_overflow=settings.DATABASE_MAX_OVERFLOW,
+    pool_timeout=settings.DATABASE_POOL_TIMEOUT,
     pool_pre_ping=True,
 )
 

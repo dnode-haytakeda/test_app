@@ -2,7 +2,7 @@ from pydantic import BaseModel
 
 
 class FieldError(BaseModel):
-    filed: str
+    field: str
     message: str
 
 

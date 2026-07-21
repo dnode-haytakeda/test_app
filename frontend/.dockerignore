@@ -1,0 +1,26 @@
+# Git
+.git
+.gitignore
+
+# Dependencies (rebuild inside container)
+node_modules
+
+# Build output
+dist
+dist-ssr
+
+# Environment files (secrets)
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Documentation
+*.md
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml

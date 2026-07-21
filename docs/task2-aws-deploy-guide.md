@@ -1,0 +1,2676 @@
+# AWS デプロイ & CI/CD パイプライン完全ガイド — ゼロから本番環境を構築する
+
+> **対象読者**: AWS・インフラ未経験の開発者
+> **前提**: Docker Compose で開発環境が動作しているフルスタックアプリ（FastAPI + React + PostgreSQL）
+> **ゴール**: AWS 上に安全でスケーラブルな本番環境を構築し、CI/CD パイプラインを自分でゼロから設計・構築できるエンジニアになること
+
+---
+
+## 目次
+
+- [第 0 部 — 全体の地図: なぜこれらすべてが必要なのか](#第-0-部--全体の地図-なぜこれらすべてが必要なのか)
+- [第 1 部 — クラウドの基礎: AWS を理解する](#第-1-部--クラウドの基礎-aws-を理解する)
+- [第 2 部 — IAM: クラウドの「鍵」と「権限」](#第-2-部--iam-クラウドの鍵と権限)
+- [第 3 部 — クラウド横断比較: サービスアカウントという概念](#第-3-部--クラウド横断比較-サービスアカウントという概念)
+- [第 4 部 — Terraform: インフラをコードで管理する](#第-4-部--terraform-インフラをコードで管理する)
+- [第 5 部 — AWS リソース設計: アプリをどこに置くか](#第-5-部--aws-リソース設計-アプリをどこに置くか)
+- [第 6 部 — GitHub Actions の基礎](#第-6-部--github-actions-の基礎)
+- [第 7 部 — CI パイプライン: 品質を守る自動化](#第-7-部--ci-パイプライン-品質を守る自動化)
+- [第 8 部 — CD パイプライン: AWS へ自動デプロイ](#第-8-部--cd-パイプライン-aws-へ自動デプロイ)
+- [第 9 部 — セキュリティ・運用・次のステップ](#第-9-部--セキュリティ運用次のステップ)
+- [コスト見積もり](#コスト見積もり)
+- [トラブルシューティング](#トラブルシューティング)
+- [用語集](#用語集)
+
+各部の冒頭に **「この部で分かること」** を、末尾に **「理解度チェック」** を置いています。チェックに自信を持って答えられたら次へ進んでください。
+
+---
+
+## 前提知識と道具
+
+| 前提 | 確認方法 |
+|------|---------|
+| Docker / Docker Compose の基本操作 | `docker compose up` でアプリが起動できる |
+| Git の基本操作 | `git push`, `git branch`, PR の作成ができる |
+| 本アプリの構成を理解していること | `backend/` (FastAPI) + `frontend/` (React) + PostgreSQL |
+| AWS アカウント | [AWS 公式](https://aws.amazon.com/) で作成。**無料利用枠 (Free Tier)** で 12 ヶ月間は多くのサービスが無料 |
+| AWS CLI | `aws --version` が動く |
+| Terraform | `terraform --version` が動く |
+
+> ⚠️ **AWS アカウントを作るのが不安な人へ**: 請求が怖い場合は、(1) AWS Budget で月額上限アラート (例: $10) を設定、(2) Free Tier の範囲でのみ操作、(3) 使い終わったら `terraform destroy` で全リソース削除、を徹底してください。
+
+---
+
+## 第 0 部 — 全体の地図: なぜこれらすべてが必要なのか
+
+> **この部で分かること**: 本書で扱う技術スタック (IAM / Terraform / AWS サービス / GitHub Actions) が、CI/CD パイプラインという 1 本の目的にどう繋がるのか / 「手動デプロイ」がなぜ破綻するのか / 自動化の全体像。
+
+### 0.1 手動デプロイの限界
+
+アプリが手元で動いているとき、「本番に出す」ための素朴な手順はこうです:
+
+1. コードを書く
+2. テストする
+3. Docker イメージをビルドする
+4. サーバにログインしてイメージを配置する
+5. データベースのマイグレーションを実行する
+6. サーバでコンテナを起動する
+
+この手順を**人間が毎回手で実行する**と、何が起きるでしょうか?
+
+| 問題 | 結果 |
+|------|------|
+| 手順を飛ばす | テストせずにデプロイして本番障害 |
+| 手順を間違える | 環境変数の設定ミスでアプリが起動しない |
+| 人によって違うやり方をする | 「私のときは動いた」問題 |
+| 毎回 30 分かかる | リリース頻度が落ち、変更がまとめて出て、リスクが上がる |
+| 金曜夕方に急いでリリース | ヒューマンエラーの確率が跳ね上がる |
+
+> 💡 **核心**: 人間は「正しい手順を毎回正確に繰り返す」のが苦手です。しかしコンピュータは得意です。**「正しい手順を 1 回定義して、あとは自動実行させる」** — これが CI/CD の本質です。
+
+### 0.2 CI/CD とは何か
+
+| 用語 | 正式名称 | 意味 |
+|------|----------|------|
+| **CI** | Continuous Integration | コードが変更されるたびに、**自動でテスト・検証する**仕組み |
+| **CD** | Continuous Delivery / Deployment | CI を通過したコードを、**自動で本番環境へ届ける**仕組み |
+
+CI と CD は独立した概念ではなく、**1 つのパイプライン (流れ作業)** の前半と後半です:
+
+```
+[Push] → [Lint] → [Test] → [Build] → [Push Image] → [Migrate] → [Deploy] → [Health Check]
+         ├────── CI (品質保証) ──────┤  ├──────── CD (自動デプロイ) ────────────────────┤
+```
+
+### 0.3 本書の技術スタックが CI/CD にどう繋がるか
+
+| 技術 | CI/CD パイプラインでの役割 |
+|------|--------------------------|
+| **IAM** | GitHub Actions が AWS の操作 (イメージ push、デプロイ) を実行するための**認証・認可** |
+| **Terraform** | デプロイ先の AWS リソース (VPC、ECS、RDS 等) を**コードで定義し、再現可能に管理** |
+| **AWS サービス群** | アプリが実際に動く**インフラ** — コンテナ実行環境・DB・ネットワーク・ロードバランサ |
+| **GitHub Actions** | 上記すべてを**自動で・正しい順序で・毎回同じように**実行するオーケストレータ |
+
+> 💡 **この 4 つが欠けると何が起きるか**: IAM なし → GitHub Actions が AWS を操作できない。Terraform なし → AWS リソースを手動で作り、誰がいつ何を変えたか追跡不能。AWS 知識なし → どこにデプロイすべきか判断できない。GitHub Actions なし → 人間が毎回手動デプロイ。**すべてが揃って初めてパイプラインが完成する**。
+
+### 0.4 全体アーキテクチャ
+
+```
+                    ┌─────────────┐
+                    │   Route 53  │  ← DNS（ドメイン名を IP に変換）
+                    └──────┬──────┘
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+    ┌─────────▼──────────┐   ┌─────────▼──────────┐
+    │    CloudFront       │   │   CloudFront        │
+    │  (フロントエンド)    │   │   (API)             │
+    │  app.example.com    │   │  api.example.com    │
+    └─────────┬──────────┘   └─────────┬──────────┘
+              │                         │
+    ┌─────────▼──────────┐   ┌─────────▼──────────┐
+    │    S3 Bucket        │   │   ALB              │
+    │  (静的ファイル)      │   │  (ロードバランサー)  │
+    └────────────────────┘   └─────────┬──────────┘
+                                       │
+                           ┌───────────┼───────────┐
+                           │                       │
+                  ┌────────▼────────┐  ┌──────────▼──────────┐
+                  │  ECS Fargate    │  │  ECS Fargate         │
+                  │  (バックエンド   │  │  (バックエンド        │
+                  │   コンテナ #1)  │  │   コンテナ #2)       │
+                  └────────┬────────┘  └──────────┬──────────┘
+                           │                       │
+                           └───────────┬───────────┘
+                                       │
+                             ┌─────────▼──────────┐
+                             │   RDS PostgreSQL    │
+                             │  (データベース)      │
+                             │  Multi-AZ           │
+                             └────────────────────┘
+```
+
+### 各 AWS サービスの役割と選定理由
+
+| サービス | 役割 | なぜこれを選ぶのか |
+|----------|------|-------------------|
+| **VPC** | プライベートネットワーク | AWS 上にあなた専用の隔離されたネットワークを作る。全ての AWS リソースはこの中に配置する |
+| **ECS Fargate** | コンテナ実行 | Docker コンテナをサーバー管理なしで実行できる。EC2 と異なり、OS のパッチ当てやスケーリングを AWS が自動管理 |
+| **ECR** | コンテナイメージ保管 | Docker Hub の AWS 版。ビルドした Docker イメージをここに保管し、ECS がここから取得 |
+| **RDS** | データベース | PostgreSQL のマネージドサービス。バックアップ、パッチ、フェイルオーバーを AWS が管理 |
+| **S3** | 静的ファイル配信 | React のビルド成果物（HTML/JS/CSS）を配置。99.999999999% の耐久性 |
+| **CloudFront** | CDN | 世界中のエッジロケーションからコンテンツを配信。HTTPS 終端も担当 |
+| **ALB** | ロードバランサー | 複数のバックエンドコンテナにリクエストを分散。ヘルスチェックで異常なコンテナを自動除外 |
+| **Route 53** | DNS | ドメイン名の管理と名前解決 |
+| **ACM** | SSL/TLS 証明書 | HTTPS 通信のための証明書を無料で発行・自動更新 |
+
+> 💡 **プロのナレッジ: なぜ ECS Fargate で、EKS（Kubernetes）ではないのか？**
+>
+> - EKS は学習コストが高く、小〜中規模アプリには過剰（Over-engineering）
+> - Fargate は「コンテナを動かす」という本質に集中できる
+> - Google/Apple レベルの企業でも、小さなサービスには Fargate 相当のシンプルな選択肢を使う
+> - **「最小の複雑さで要件を満たす」がプロの判断基準**
+
+### 理解度チェック (第 0 部)
+
+- CI と CD それぞれが自動化する「対象」を 1 文で説明できるか?
+- 手動デプロイが引き起こす 3 つ以上の問題を挙げられるか?
+- IAM / Terraform / AWS サービス / GitHub Actions が CI/CD パイプラインでどう連携するか説明できるか?
+
+---
+
+## 第 1 部 — クラウドの基礎: AWS を理解する
+
+> **この部で分かること**: クラウドとは何か / AWS の基本概念 (リージョン・AZ・VPC) / 「サーバを買う」から「サービスを借りる」への発想転換 / AWS の料金体系の基本。
+
+### 1.1 クラウドとは — 「他人のコンピュータ」ではない
+
+「クラウド = 他人のサーバを借りるだけ」と思っていると、本質を見誤ります。クラウドの真の価値は:
+
+1. **スケーラビリティ**: アクセスが増えたら 5 分で 10 台に増やし、減ったら 1 台に戻せる
+2. **従量課金**: 使った分だけ払う（夜中に誰も使わないなら、その時間はほぼ無料）
+3. **マネージドサービス**: データベースの運用（バックアップ・パッチ・冗長化）をクラウド側がやってくれる
+4. **グローバル配信**: 世界中のリージョンにボタン 1 つでデプロイできる
+
+> 💡 **自前サーバ (オンプレミス) との対比**: オンプレでは「3 年後のピーク負荷を予測してサーバを購入する」必要があります。予測が外れると、余れば無駄なコスト、足りなければサービスダウン。クラウドなら**今この瞬間の負荷に合わせて**リソースを増減できます。
+
+### 1.2 リージョンとアベイラビリティゾーン（AZ）
+
+AWS は世界中にデータセンターを持っています。これを階層で整理しています:
+
+```
+AWS グローバルインフラ
+├── リージョン (ap-northeast-1 = 東京)
+│   ├── AZ-a (ap-northeast-1a) ← 独立したデータセンター群
+│   ├── AZ-c (ap-northeast-1c)
+│   └── AZ-d (ap-northeast-1d)
+├── リージョン (us-east-1 = バージニア)
+│   ├── AZ-a
+│   ├── AZ-b
+│   └── ...
+└── ...
+```
+
+| 概念 | 比喩 | 特徴 |
+|------|------|------|
+| **リージョン** | 「都市」 | 地理的に離れた場所。東京リージョン、バージニアリージョン等。**データの法的管轄**が異なる |
+| **AZ** | 「ビル」 | 同じリージョン内の独立したデータセンター群。電源・ネットワークが独立しており、1 つの AZ が災害で止まっても他は影響を受けない |
+
+> 💡 **リージョン選択の判断軸**: (1) ユーザーとの物理的距離 (レイテンシ) → 日本ユーザーなら東京。(2) 利用可能なサービス → 一部サービスは特定リージョンのみ。(3) コスト → リージョンによって単価が異なる。(4) 法規制 → データが国外に出せない場合は日本リージョン必須。
+
+> 💡 **プロのナレッジ**: 本番環境は必ず **2つ以上の AZ** にまたがって構築します。「ひとつのデータセンターが落ちても、もうひとつが動いている」状態を作るのが高可用性（High Availability: HA）設計の基本です。
+
+### 1.3 VPC（Virtual Private Cloud）— 自分だけのネットワーク
+
+**VPC** は、AWS 上に作る「自分だけの仮想ネットワーク」です。あなたのリソース（サーバ、DB）だけが住む「閉じたネットワーク空間」を作り、外部からの不正アクセスを防ぎます。
+
+> 💡 **なぜ VPC が必要か**: もし全員のサーバが同じネットワークに丸見えだったら、他人のサーバから自分の DB にアクセスできてしまいます。VPC は「自分の敷地（ネットワーク）」を塀で囲い、**出入口を自分で管理する**仕組みです。
+
+#### CIDR 表記 — ネットワークの「住所の範囲」
+
+VPC を作るには「このネットワークで使える IP アドレスの範囲」を指定します。その書き方が **CIDR（サイダー）** 表記です。
+
+```
+10.0.0.0/16
+│         │
+│         └── /16 = 上位 16 ビットを固定 → 残り 16 ビット分のアドレスが使える
+│                   → 2^16 = 65,536 個の IP アドレス
+└── ネットワークの先頭アドレス
+```
+
+| CIDR | 使える IP 数 | 用途 |
+|------|-------------|------|
+| `/16` | 65,536 | VPC 全体 |
+| `/24` | 256 | サブネット 1 つ分 |
+| `/32` | 1 | 特定の IP 1 つだけ |
+
+> 🛠 **初見で「/16 って何?」と思ったら**: IP アドレスは 32 ビットの数字です。`/16` は「先頭 16 ビットを固定し、残り 16 ビットが自由」= 65,536 個の部屋がある建物、と覚えれば十分です。
+
+#### サブネット、Internet Gateway、NAT Gateway
+
+VPC は 1 つの大きなネットワークですが、その中をさらに**サブネット**という小さな区画に分けて、役割ごとに管理します。
+
+```
+VPC (10.0.0.0/16) — 65,536 個の IP アドレスを持つ空間
+│
+├── Public Subnet (AZ-a): 10.0.1.0/24  ← ALB, NAT Gateway
+├── Public Subnet (AZ-c): 10.0.2.0/24  ← ALB, NAT Gateway
+├── Private Subnet (AZ-a): 10.0.10.0/24 ← ECS (バックエンド)
+├── Private Subnet (AZ-c): 10.0.11.0/24 ← ECS (バックエンド)
+├── DB Subnet (AZ-a): 10.0.20.0/24      ← RDS
+└── DB Subnet (AZ-c): 10.0.21.0/24      ← RDS
+```
+
+| コンポーネント | 比喩 | 役割 |
+|---------------|------|------|
+| **Internet Gateway (IGW)** | 「正門」 | VPC とインターネットを繋ぐ出入口。これがないと VPC は完全に閉じた空間 |
+| **パブリックサブネット** | 「受付ロビー」 | IGW を通じてインターネットと通信可能。ロードバランサを置く |
+| **プライベートサブネット** | 「金庫室」 | インターネットから**直接アクセスできない**。アプリケーションコンテナを置く |
+| **DB サブネット** | 「金庫の奥」 | さらに隔離。データベースは最も保護すべきリソース |
+| **NAT Gateway** | 「裏口（出るだけ）」 | プライベートサブネットのリソースが**外向きに通信する**ための出口。外から入ることはできない |
+| **ルートテーブル** | 「案内板」 | 「宛先 X への通信は Y を通れ」という経路情報の表 |
+
+> 💡 **なぜ NAT Gateway が必要か**: プライベートサブネットの ECS コンテナは、ECR からイメージを pull したり、外部 API を叩いたりする必要があります。しかしインターネットから直接アクセスされたくはない。NAT Gateway は「**外には出られるが、外からは入れない一方通行の扉**」です。
+
+> ⚠️ **NAT Gateway はコストに注意**: NAT Gateway は時間課金 ($0.062/h ≈ 月$45/AZ) + データ転送量課金がかかり、Free Tier 対象外です。学習中は NAT Gateway を 1 AZ に限定するか、VPC エンドポイントで ECR/S3 に直接接続するとコストを抑えられます。
+
+> 💡 **Docker Compose との対比**: `docker-compose.yml` で DB の `ports` を公開せず内部ネットワークだけに公開するのは、このプライベートサブネットと同じ発想です。Docker ネットワーク内（= VPC 内）でのみ到達可能にし、外部からの直接アクセスを遮断する。
+
+#### ARN (Amazon Resource Name) — AWS リソースの住民票
+
+AWS のすべてのリソースには **ARN** という一意の識別子があります。IAM ポリシーで「どのリソースへのアクセスを許可するか」を指定するときに使います。
+
+```
+arn:aws:ecs:ap-northeast-1:123456789012:service/test-app/backend
+│   │   │   │               │              │
+│   │   │   │               │              └── リソース名
+│   │   │   │               └── AWS アカウント ID (12 桁)
+│   │   │   └── リージョン
+│   │   └── サービス名 (ecs, s3, rds 等)
+│   └── パーティション (通常は aws)
+└── ARN のプレフィックス
+```
+
+> 💡 **ARN はとりあえず「AWS リソースの住所」と覚える**: IAM ポリシーの `Resource` フィールドで「この ECR リポジトリだけに push を許可」と書くときに使います。最初は構文を暗記する必要はなく、**AWS コンソールで各リソースのページに行けば ARN が表示される**ので、それをコピーすれば大丈夫です。
+
+### 1.4 AWS の料金体系 — 「使った分だけ」の読み解き方
+
+AWS の料金は複雑に見えますが、基本パターンは 3 つです:
+
+| パターン | 例 | 課金単位 |
+|---------|-----|---------|
+| **時間課金** | EC2, RDS, ECS (Fargate) | 起動している時間 × スペック |
+| **リクエスト課金** | Lambda, API Gateway, S3 (GET/PUT) | API 呼び出し回数 |
+| **データ量課金** | S3 (ストレージ), CloudWatch (ログ), データ転送 | GB 単位 |
+
+> ⚠️ **初学者が踏みやすい罠**: (1) EC2 / RDS を起動したまま忘れて月末に請求が来る → 使わないリソースは必ず停止/削除。`terraform destroy` で一括削除できるのが IaC の利点です。(2) NAT Gateway のデータ転送料 → 固定費 + 転送量で意外と高い。(3) CloudWatch ログの保存 → 無期限保存にすると蓄積で課金が膨らむ。
+
+> 🛠 **Budget アラートの設定方法**: AWS コンソール → 「Billing and Cost Management」→ 「Budgets」→ 「Create budget」→ 「Cost budget」→ 月額上限とメール通知先を設定。**本番運用する前に、これを最初にやること**。
+
+### 理解度チェック (第 1 部)
+
+- リージョンと AZ の違いを 1 文ずつで説明できるか?
+- VPC でパブリックサブネットとプライベートサブネットを分ける理由を、セキュリティの観点で説明できるか?
+- CIDR 表記の `/16` と `/24` は、それぞれ何個の IP アドレスを表すか?
+- Internet Gateway と NAT Gateway の違いを「方向 (in/out)」で説明できるか?
+- ARN とは何か、1 文で説明できるか?
+- AWS の 3 つの課金パターンをそれぞれ例とともに挙げられるか?
+
+---
+
+## 第 2 部 — IAM: クラウドの「鍵」と「権限」
+
+> **この部で分かること**: IAM ユーザー・IAM ロール・IAM ポリシーの違いと使い分け / 最小権限の原則 / なぜ IAM が CI/CD パイプラインの前提条件なのか / OIDC を使った安全な認証。
+
+### 2.1 なぜ IAM を最初に学ぶのか
+
+AWS にはサーバ (EC2)、データベース (RDS)、コンテナ実行環境 (ECS) など何百ものサービスがあります。これらを操作するには**「あなたは誰か (認証)」**と**「あなたに何が許されているか (認可)」**を証明しなければなりません。
+
+**IAM (Identity and Access Management)** は、この認証と認可を一元管理するサービスです。IAM なくしては AWS の何も操作できません。
+
+> 💡 **本アプリでの対応関係**: バックエンドの `app/core/security.py` で JWT を使って「このリクエストはログインユーザーのものか（認証）」「この操作を許可するか（認可）」を制御しているのと同じ概念です。IAM は**クラウドインフラ版の認証・認可**です。
+
+> ⚠️ **ルートアカウントの取り扱い (最重要)**: AWS アカウントを作ると**ルートアカウント**が 1 つだけ作られます。これは「全権限を持つ神のアカウント」です。**日常の作業にルートアカウントを使ってはいけません**。ルートアカウントでやるべきことは: (1) MFA を有効化する、(2) IAM ユーザーを作る、(3) 以後はその IAM ユーザーでログインする。これだけです。
+
+> 🛠 **ルートアカウントの MFA 設定手順**: AWS コンソール → 右上のアカウント名 → 「セキュリティ認証情報」→ 「MFA デバイスの割り当て」→ 認証アプリ (Google Authenticator, 1Password 等) でスキャン → 2 回の確認コードを入力 → 完了。**これをやらずに本番 AWS を使うのは、家の鍵を開けっ放しにするのと同じ**です。
+
+### 2.2 IAM の 3 つの柱
+
+#### IAM ユーザー — 「人間用のアカウント」
+
+**IAM ユーザー**は、AWS マネジメントコンソール（Web 画面）にログインしたり、CLI で操作したりする**人間のためのアカウント**です。
+
+| 属性 | 説明 |
+|------|------|
+| **長期的な認証情報** | パスワードやアクセスキーは、明示的に変更するまで有効 |
+| **1 対 1 対応** | 1 人の人間 = 1 つの IAM ユーザー |
+| **MFA 推奨** | 多要素認証（ワンタイムパスコード等）を必ず有効化する |
+
+> ⚠️ **重要な注意**: IAM ユーザーの**アクセスキー (Access Key ID + Secret Access Key)** は、漏洩すると誰でもその権限で AWS を操作できます。**GitHub のリポジトリに絶対に含めてはいけません**。
+
+#### IAM ロール — 「帽子をかぶる」
+
+**IAM ロール**は、特定の権限セットを**一時的に引き受ける（assume する）** ための仕組みです。人間だけでなく、**AWS サービスや外部システム**も引き受けられます。
+
+| 属性 | 説明 |
+|------|------|
+| **一時的な認証情報** | ロールを引き受けると、有効期限付き（通常 1 時間）のトークンが発行される |
+| **パスワードもアクセスキーも持たない** | ロール自体は「誰かが引き受けて初めて機能する」 |
+| **信頼ポリシーで制御** | 「誰がこのロールを引き受けられるか」を明示的に定義 |
+
+> 💡 **IAM ユーザーとロールの決定的な違い**: ユーザーは**長期的な鍵**を持ち、ロールは**一時的なトークン**で動く。長期的な鍵は漏洩リスクが高い。だから**プログラム（CI/CD、AWS サービス）には IAM ロールを使う**のが現代のベストプラクティスです。
+
+#### IAM ポリシー — 「何を許可するかの定義書」
+
+**IAM ポリシー**は、「どの AWS リソースに対して、どの操作を、許可するか/拒否するか」を JSON で定義したドキュメントです。
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ecr:GetAuthorizationToken",
+        "ecr:BatchGetImage",
+        "ecr:PutImage"
+      ],
+      "Resource": "arn:aws:ecr:ap-northeast-1:123456789012:repository/test-app-*"
+    }
+  ]
+}
+```
+
+| フィールド | 意味 |
+|-----------|------|
+| `Effect` | `Allow`（許可）または `Deny`（拒否） |
+| `Action` | 許可/拒否する操作（`ecr:PutImage` = ECR にイメージを push） |
+| `Resource` | 対象リソースの ARN。`*` でワイルドカード |
+
+> 💡 **最小権限の原則 (Principle of Least Privilege)**: ポリシーでは「やりたいことに必要な操作だけ」を許可します。「面倒だから `Action: "*"`（全操作許可）」は**絶対にやってはいけない**。万一漏洩したときの被害範囲が無限大になります。
+
+### 2.3 三者の関係を整理する
+
+| 何を | どう使い分ける |
+|------|---------------|
+| **IAM ユーザー** | 人間の開発者がコンソール/CLI を操作するとき。必ず MFA を有効化 |
+| **IAM ロール** | プログラム (CI/CD、ECS、Lambda) が AWS を操作するとき。**こちらを優先する** |
+| **IAM ポリシー** | ユーザーにもロールにもアタッチ可能。権限の「定義」自体を再利用できる |
+| **IAM グループ** | 複数のユーザーに同じポリシーをまとめてアタッチする入れ物 |
+
+### 2.4 CI/CD における IAM — GitHub Actions が AWS を操作するには
+
+CI/CD パイプラインが AWS にデプロイするとき、GitHub Actions は「AWS から見て外部のシステム」です。
+
+#### 方法 1: アクセスキーを GitHub Secrets に保存（非推奨）
+
+```yaml
+# ⚠️ アンチパターン — やめてください
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+```
+
+問題点:
+- **長期的な鍵が GitHub に保存される** → 漏洩リスク
+- **鍵のローテーションが手動** → 運用負荷
+- **誰がいつ使ったか追跡困難**
+
+#### 方法 2: OIDC (OpenID Connect) で IAM ロールを引き受ける（推奨）
+
+```yaml
+# ✅ ベストプラクティス
+permissions:
+  id-token: write  # OIDC トークンの発行を許可
+  contents: read
+
+steps:
+  - uses: aws-actions/configure-aws-credentials@v4
+    with:
+      role-to-assume: arn:aws:iam::123456789012:role/github-actions-deploy
+      aws-region: ap-northeast-1
+```
+
+仕組み:
+1. GitHub Actions が OIDC トークンを発行
+2. AWS に「このトークンは github.com が発行したものです」と提示
+3. AWS が信頼ポリシーを確認し、一時的な認証情報を返す
+4. GitHub Actions がその認証情報で AWS を操作
+
+メリット:
+- **長期的な鍵が存在しない** → 漏洩しようがない
+- **一時的なトークン** → 1 時間で自動失効
+- **リポジトリ・ブランチ単位で制御可能** → `main` ブランチからのみ deploy 可能
+
+#### AWS 側の OIDC プロバイダ設定（Terraform）
+
+```hcl
+# GitHub Actions の OIDC プロバイダを AWS に登録
+resource "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
+
+  client_id_list = ["sts.amazonaws.com"]
+
+  # GitHub の証明書のサムプリント
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+}
+
+# デプロイ用 IAM ロール
+resource "aws_iam_role" "github_actions_deploy" {
+  name = "github-actions-deploy"
+
+  # 信頼ポリシー: このロールを「誰が」引き受けられるか
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.github.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          # ⚠️ ここでリポジトリとブランチを限定する
+          "token.actions.githubusercontent.com:sub" = "repo:your-org/test_app:ref:refs/heads/main"
+        }
+      }
+    }]
+  })
+}
+
+# 権限ポリシー: このロールで「何が」できるか
+resource "aws_iam_role_policy" "deploy_permissions" {
+  name = "deploy-permissions"
+  role = aws_iam_role.github_actions_deploy.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecs:UpdateService",
+          "ecs:DescribeServices",
+          "ecs:RegisterTaskDefinition",
+          "ecs:DescribeTaskDefinition",
+          "ecs:RunTask"
+        ]
+        Resource = "arn:aws:ecs:ap-northeast-1:*:*"
+      },
+      {
+        Effect = "Allow"
+        Action = "iam:PassRole"
+        Resource = [
+          "arn:aws:iam::*:role/test-app-ecs-execution-role",
+          "arn:aws:iam::*:role/test-app-ecs-task-role"
+        ]
+      }
+    ]
+  })
+}
+```
+
+> 🛠 **「`iam:PassRole` って何?」**: ECS にタスク定義を登録するとき、タスクに割り当てるロールを「渡す」操作です。GitHub Actions のデプロイロールに `iam:PassRole` がないと、タスク定義の更新で `AccessDenied` になります。初見で最もハマりやすい権限の 1 つです。
+
+> 🛠 **OIDC で `AccessDenied` が出たら**: 90% は信頼ポリシーの `Condition` が合っていません。(1) `sub` のリポジトリ名が正しいか、(2) ブランチ制限と実際の push ブランチが一致するか、(3) `aud` が `sts.amazonaws.com` か、を確認してください。
+
+### 2.5 IAM の信頼ポリシー — 「誰がロールをかぶれるか」
+
+IAM ロールには 2 種類のポリシーがあります:
+
+| ポリシーの種類 | 定義すること | 例 |
+|---------------|-------------|-----|
+| **権限ポリシー** | このロールで「何ができるか」 | ECR への push、ECS の更新 |
+| **信頼ポリシー** | このロールを「誰が引き受けられるか」 | GitHub Actions（特定リポジトリの main ブランチのみ） |
+
+> ⚠️ **`Condition` が命綱**: `sub` (subject) の条件を `repo:your-org/test_app:*` にすると、PR ブランチからもデプロイできてしまいます。本番デプロイは **`ref:refs/heads/main` に限定する**のがベストプラクティスです。
+
+### 理解度チェック (第 2 部)
+
+- IAM ユーザーと IAM ロールの違いを「長期/一時」「人間/プログラム」の観点で説明できるか?
+- IAM ポリシーの `Effect`, `Action`, `Resource` がそれぞれ何を定義するか言えるか?
+- CI/CD で IAM ロール + OIDC を使うべき理由を、アクセスキー方式の問題点と対比して説明できるか?
+- 信頼ポリシーの `Condition` でリポジトリとブランチを制限する理由を説明できるか?
+
+---
+
+## 第 3 部 — クラウド横断比較: サービスアカウントという概念
+
+> **この部で分かること**: 「プログラムがクラウドを操作する」ための仕組みが各クラウドでどう設計されているか / Google Cloud のサービスアカウント / Azure のマネージド ID / AWS IAM ロールとの対応関係。
+
+### 3.1 「人間以外がクラウドを操作する」とは
+
+クラウドを操作するのは人間だけではありません:
+
+- **CI/CD パイプライン** (GitHub Actions) がイメージを push し、デプロイする
+- **アプリケーション** (ECS コンテナ) が S3 にファイルを保存する
+- **スケジューラ** (CloudWatch Events) が定期バッチを起動する
+
+各クラウドは「人間以外の操作者」をどう表現するか、それぞれ独自の概念を持っています。
+
+### 3.2 各クラウドの比較表
+
+| 概念 | AWS | Google Cloud | Azure |
+|------|-----|-------------|-------|
+| **人間用 ID** | IAM ユーザー | Google アカウント | Microsoft Entra ID ユーザー |
+| **プログラム用 ID** | IAM ロール | サービスアカウント | マネージド ID / サービスプリンシパル |
+| **権限定義** | IAM ポリシー (JSON) | IAM ロール (事前定義 / カスタム) | Azure ロール (RBAC) |
+| **長期的な鍵** | アクセスキー (非推奨) | サービスアカウントキー (非推奨) | クライアントシークレット (非推奨) |
+| **推奨される認証方法** | IAM ロール + OIDC | Workload Identity Federation | フェデレーション資格情報 |
+| **CI/CD 連携** | OIDC → `sts:AssumeRoleWithWebIdentity` | Workload Identity Federation | OIDC → フェデレーション資格情報 |
+
+### 3.3 共通するトレンド: 「長期的な鍵を排除する」
+
+3 大クラウドすべてで、**「長期的な認証情報を使わない」** 方向に進んでいます。
+
+| クラウド | 長期鍵 → 無鍵化の仕組み |
+|---------|-------------------------|
+| **AWS** | IAM ロール + OIDC プロバイダ |
+| **GCP** | Workload Identity Federation |
+| **Azure** | Federated Identity Credentials |
+
+### 3.4 GitHub Actions からの認証: AWS vs GCP vs Azure
+
+```yaml
+# === AWS ===
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: arn:aws:iam::123456789012:role/deploy
+    aws-region: ap-northeast-1
+
+# === Google Cloud ===
+- uses: google-github-actions/auth@v2
+  with:
+    workload_identity_provider: projects/123/locations/global/workloadIdentityPools/github/providers/my-repo
+    service_account: deployer@my-project.iam.gserviceaccount.com
+
+# === Azure ===
+- uses: azure/login@v2
+  with:
+    client-id: ${{ secrets.AZURE_CLIENT_ID }}
+    tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+    subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+```
+
+> 💡 **つまり**: 「プログラムがクラウドを操作する安全な方法」は、クラウドが違っても**同じ思想（一時的なトークン + 信頼関係の定義）** に収束しています。AWS の IAM ロール + OIDC を理解すれば、GCP や Azure でも応用が利きます。
+
+### 理解度チェック (第 3 部)
+
+- AWS IAM ロールと GCP サービスアカウントの設計思想の違いを説明できるか?
+- 3 大クラウドで共通する「長期的な鍵を排除する」トレンドの理由を説明できるか?
+- GitHub Actions から各クラウドへ認証する仕組みの共通点を 3 つ挙げられるか?
+
+---
+
+## 第 4 部 — Terraform: インフラをコードで管理する
+
+> **この部で分かること**: Infrastructure as Code (IaC) とは何か / Terraform の仕組み (Provider / Resource / State / Plan / Apply) / HCL の書き方 / Terraform の実践的な運用ベストプラクティス。
+
+### 4.1 なぜ「コードで」インフラを管理するのか
+
+AWS マネジメントコンソール（Web 画面）でポチポチとリソースを作ることはできます。しかし:
+
+| 手動管理の問題 | 説明 |
+|---------------|------|
+| **再現性がない** | 「同じ構成を staging と production に作りたい」のに、手順を忘れて微妙に違う構成になる |
+| **変更履歴がない** | 「誰がいつ何を変えたか」が追跡できない。障害時の原因調査が困難 |
+| **レビューできない** | 「セキュリティグループのルールを追加した」を他の人が事前にレビューできない |
+| **スケールしない** | リソースが 10 個なら手動でも何とかなるが、100 個になると破綻する |
+
+> 💡 **核心**: アプリのコードを Git で管理し、PR でレビューし、CI でテストするのと**まったく同じことをインフラにも適用する**のが IaC です。
+>
+> **手動で作ったインフラは「いつか壊れる、そして再構築できない」** — これは多くの現場で経験される失敗です。
+
+### 4.2 Terraform のインストール
+
+```bash
+# macOS (Homebrew)
+brew tap hashicorp/tap && brew install hashicorp/tap/terraform
+
+# 確認
+terraform --version
+# 例: Terraform v1.9.x on darwin_arm64
+```
+
+> 🛠 **`command not found: terraform` が出たら**: パスが通っていません。Homebrew なら `brew link terraform`、手動インストールなら解凍した `terraform` バイナリを `/usr/local/bin/` に移動してください。
+
+### 4.3 Terraform の基本概念
+
+#### Provider — 「どのクラウドと会話するか」
+
+```hcl
+terraform {
+  required_version = ">= 1.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "ap-northeast-1"  # 東京リージョン
+}
+```
+
+Provider は「Terraform と AWS の間の翻訳者」です。Terraform は Provider を通じて各クラウドの API を呼び出します。
+
+#### Resource — 「何を作るか」
+
+```hcl
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+
+  tags = {
+    Name        = "test-app-vpc"
+    Environment = "production"
+  }
+}
+
+resource "aws_subnet" "private" {
+  vpc_id            = aws_vpc.main.id          # ← 上の VPC を参照
+  cidr_block        = "10.0.10.0/24"
+  availability_zone = "ap-northeast-1a"
+
+  tags = {
+    Name = "test-app-private-a"
+  }
+}
+```
+
+> 💡 **リソースの依存関係は自動解決**: `aws_subnet` が `aws_vpc.main.id` を参照していることで、Terraform は「VPC を先に作ってからサブネットを作る」と判断します。明示的な順序指定は不要です。
+
+#### Data Source — 「既にあるものを参照する」
+
+```hcl
+# 最新の Amazon Linux 2 AMI を検索
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
+```
+
+`data` は「作る」のではなく「既にあるものを読み取る」ブロックです。
+
+#### Variable — 「パラメータ化する」
+
+```hcl
+variable "environment" {
+  description = "デプロイ環境 (staging / production)"
+  type        = string
+  default     = "staging"
+
+  validation {
+    condition     = contains(["staging", "production"], var.environment)
+    error_message = "environment は staging または production のみ"
+  }
+}
+
+variable "db_password" {
+  description = "RDS のマスターパスワード"
+  type        = string
+  sensitive   = true  # ← plan/apply のログに値が表示されない
+}
+```
+
+| 属性 | 説明 |
+|------|------|
+| `type` | `string`, `number`, `bool`, `list(string)`, `map(string)` など |
+| `default` | デフォルト値。省略すると `terraform apply` 時に入力を求められる |
+| `sensitive` | `true` にすると、出力やログに値がマスクされる |
+| `validation` | 値のバリデーション。CI で誤った値を検知できる |
+
+> ⚠️ **`sensitive = true` は表示のマスクのみ**: state ファイル内には平文で保存されます。**state ファイル自体の暗号化**（S3 + KMS）も必要です。
+
+#### Output — 「作ったものの情報を外に出す」
+
+```hcl
+output "alb_dns_name" {
+  description = "ALB の DNS 名。ブラウザでアクセスするアドレス"
+  value       = aws_lb.main.dns_name
+}
+
+output "ecr_repository_url" {
+  description = "ECR リポジトリの URL。CI/CD から push する先"
+  value       = aws_ecr_repository.backend.repository_url
+}
+```
+
+### 4.4 Terraform のワークフロー
+
+```
+[terraform init] → [terraform plan] → [レビュー] → [terraform apply]
+     │                    │                              │
+ Provider DL         差分の表示                      実際に適用
+```
+
+#### `terraform init` — 最初に必ず 1 回
+
+```bash
+$ terraform init
+Initializing provider plugins...
+- Installing hashicorp/aws v5.80.0...
+Terraform has been successfully initialized!
+```
+
+#### `terraform plan` — 最も重要なステップ
+
+```bash
+$ terraform plan
+
+  # aws_ecs_service.backend will be updated in-place
+  ~ resource "aws_ecs_service" "backend" {
+      ~ desired_count = 2 -> 3
+    }
+
+  # aws_security_group_rule.allow_https will be created
+  + resource "aws_security_group_rule" "allow_https" { ... }
+
+Plan: 1 to add, 1 to change, 0 to destroy.
+```
+
+| 記号 | 意味 |
+|------|------|
+| `+` | 新規作成 |
+| `~` | 変更 (in-place) |
+| `-` | 削除 |
+| `-/+` | 削除して再作成（破壊的変更） |
+
+> 💡 **CI/CD での活用**: PR で `terraform plan` を実行し、差分をコメントとして投稿する。レビュアーが「この変更は安全か?」を判断してから `terraform apply` する。**これが IaC の最大の利点**です。
+
+### 4.5 State（状態）管理
+
+Terraform は「前回 apply した結果」を **state ファイル** (`terraform.tfstate`) に記録します。
+
+#### ローカル state vs リモート state
+
+| 方式 | ファイルの置き場所 | 問題 |
+|------|-------------------|------|
+| ローカル | 手元の `terraform.tfstate` | チームメンバーと共有できない。紛失したら復旧困難 |
+| **リモート** | S3 + DynamoDB | チームで共有可能。**排他ロックで同時変更を防止** |
+
+```hcl
+# リモート state (推奨)
+terraform {
+  backend "s3" {
+    bucket         = "test-app-terraform-state"
+    key            = "production/terraform.tfstate"
+    region         = "ap-northeast-1"
+    encrypt        = true                          # SSE-S3 で暗号化
+    dynamodb_table = "test-app-terraform-lock"     # 同時実行防止
+  }
+}
+```
+
+> ⚠️ **state ファイルにはすべての秘密が含まれる**: DB パスワード、秘密鍵など。だから (1) S3 のアクセス制限を厳格に、(2) バケットの暗号化を有効に、(3) バージョニングを有効にする（誤削除からの復旧）。
+
+#### `terraform destroy` — 作ったものを全部消す
+
+```bash
+$ terraform destroy
+Plan: 0 to add, 0 to change, 15 to destroy.
+Do you really want to destroy all resources? (yes/no): yes
+```
+
+> ⚠️ **`destroy` は不可逆**: 特に RDS のデータは `deletion_protection = true` にしていないと**完全に消えます**。学習で使い終わったリソースを消すには便利ですが、本番では**絶対に間違えて実行しないように**。本番環境では `deletion_protection` を有効にし、IAM ポリシーで `destroy` に必要な権限を通常のロールから外すのが安全です。
+
+### 4.6 モジュール — コードの再利用
+
+```
+infrastructure/
+├── modules/             ← 再利用可能な「部品」
+│   ├── vpc/
+│   │   ├── main.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   ├── ecs/
+│   ├── rds/
+│   ├── ecr/
+│   ├── s3-cloudfront/
+│   └── alb/
+├── environments/        ← 環境ごとの「パラメータ」
+│   ├── dev/
+│   │   └── main.tf
+│   └── prod/
+│       └── main.tf
+```
+
+```hcl
+# environments/prod/main.tf
+module "networking" {
+  source      = "../../modules/vpc"
+  project_name = "test-app"
+  environment  = "production"
+  vpc_cidr     = "10.0.0.0/16"
+}
+
+module "ecs" {
+  source          = "../../modules/ecs"
+  environment     = "production"
+  vpc_id          = module.networking.vpc_id
+  subnet_ids      = module.networking.private_subnet_ids
+  desired_count   = 3
+}
+```
+
+> 💡 **なぜ環境とモジュールを分けるのか**: モジュールは「VPC を作る」「RDS を作る」という**部品**を定義。環境は「開発では小さいインスタンス、本番では大きいインスタンス」という**パラメータ**を定義。同じモジュールを `dev` と `prod` で使い回すことで、環境間の差異を**変数の違いだけ**に限定できます。
+
+### 4.7 Terraform のベストプラクティス
+
+| カテゴリ | プラクティス | 理由 |
+|---------|-------------|------|
+| **バージョン固定** | `required_version` と Provider の `version` を明記 | 意図しないバージョンアップで壊れるのを防ぐ |
+| **リモート state** | S3 + DynamoDB | チーム開発の前提条件 |
+| **環境分離** | `environments/staging/`, `environments/production/` | staging と production の state を完全分離 |
+| **命名規則** | `{project}-{environment}-{resource}` | リソースの識別と検索を容易に |
+| **タグ付け** | すべてのリソースに `Environment`, `Project`, `ManagedBy` | コスト追跡と自動化 |
+| **`sensitive`** | パスワード、鍵は `sensitive = true` | ログへの漏洩防止 |
+| **`terraform fmt`** | コードのフォーマット統一 | レビューの差分ノイズを減らす |
+| **`terraform validate`** | 構文チェック | CI で早期にエラーを検知 |
+| **plan の保存** | `terraform plan -out=plan.tfplan` | plan と apply の間に変更が入ることを防ぐ |
+| **state のロック** | DynamoDB テーブル | 2 人が同時に apply するのを防ぐ |
+
+### 理解度チェック (第 4 部)
+
+- 「宣言的」と「命令的」の違いを 1 文ずつで説明できるか?
+- `terraform plan` と `terraform apply` の違いを説明できるか?
+- state ファイルをリモート (S3) に置くべき理由を 3 つ挙げられるか?
+- `sensitive = true` は何を防ぎ、何を防が**ない**か?
+
+---
+
+## 第 5 部 — AWS リソース設計: アプリをどこに置くか
+
+> **この部で分かること**: Docker Compose の各コンポーネントを、どの AWS サービスにマッピングするか / ECS Fargate / RDS / ALB / ECR / S3+CloudFront の設定 / ネットワーク設計。
+
+### 5.1 Docker Compose → AWS へのマッピング
+
+| Docker Compose | AWS サービス | 役割 |
+|----------------|-------------|------|
+| `backend` サービス | **ECS Fargate** | FastAPI アプリの実行 |
+| `db` サービス (PostgreSQL) | **RDS PostgreSQL** | データベース |
+| `frontend` サービス | **S3 + CloudFront** | React SPA の配信 |
+| Docker ネットワーク | **VPC + サブネット** | ネットワーク分離 |
+| ポートマッピング | **ALB** | トラフィック振り分け |
+| `.env` ファイル | **Secrets Manager / SSM** | 秘密値の管理 |
+
+### 5.2 VPC の構築（Terraform）
+
+```hcl
+# infrastructure/modules/vpc/main.tf
+
+# --- VPC 本体 ---
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr  # "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Name = "${var.project_name}-vpc"
+  }
+}
+
+# --- インターネットゲートウェイ ---
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.project_name}-igw"
+  }
+}
+
+# --- パブリックサブネット ---
+resource "aws_subnet" "public" {
+  count                   = length(var.availability_zones)
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index + 1)
+  availability_zone       = var.availability_zones[count.index]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.project_name}-public-${var.availability_zones[count.index]}"
+  }
+}
+
+# --- プライベートサブネット ---
+resource "aws_subnet" "private" {
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
+  availability_zone = var.availability_zones[count.index]
+
+  tags = {
+    Name = "${var.project_name}-private-${var.availability_zones[count.index]}"
+  }
+}
+
+# --- DB サブネット ---
+resource "aws_subnet" "database" {
+  count             = length(var.availability_zones)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 20)
+  availability_zone = var.availability_zones[count.index]
+
+  tags = {
+    Name = "${var.project_name}-db-${var.availability_zones[count.index]}"
+  }
+}
+
+# --- NAT ゲートウェイ ---
+resource "aws_eip" "nat" {
+  count  = length(var.availability_zones)
+  domain = "vpc"
+}
+
+resource "aws_nat_gateway" "main" {
+  count         = length(var.availability_zones)
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+
+  tags = {
+    Name = "${var.project_name}-nat-${var.availability_zones[count.index]}"
+  }
+
+  depends_on = [aws_internet_gateway.main]
+}
+
+# --- ルートテーブル ---
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "${var.project_name}-public-rt"
+  }
+}
+
+resource "aws_route_table_association" "public" {
+  count          = length(var.availability_zones)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table" "private" {
+  count  = length(var.availability_zones)
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main[count.index].id
+  }
+
+  tags = {
+    Name = "${var.project_name}-private-rt-${count.index}"
+  }
+}
+
+resource "aws_route_table_association" "private" {
+  count          = length(var.availability_zones)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[count.index].id
+}
+```
+
+### 5.3 RDS（データベース）の構築
+
+#### なぜ RDS を使うのか（Docker の PostgreSQL ではダメなのか）
+
+| 観点 | Docker PostgreSQL | RDS |
+|------|-------------------|-----|
+| バックアップ | 自分で cron ジョブ等を設定 | **自動バックアップ**（35日分） |
+| パッチ適用 | 自分で OS / DB のパッチを管理 | **自動パッチ適用** |
+| 障害復旧 | コンテナが死んだらデータも消える | **Multi-AZ** で自動フェイルオーバー |
+| スケーリング | CPU/メモリ変更のためにコンテナを再構築 | **数クリック**でスケールアップ |
+| 暗号化 | 自分で設定 | **保存時暗号化**がワンクリック |
+
+> 💡 **プロのナレッジ**: 「マネージドサービスを使えるなら使う」がクラウドの基本原則です。自分で管理するインフラは**負債**です。
+
+```hcl
+# infrastructure/modules/rds/main.tf
+
+resource "aws_db_subnet_group" "main" {
+  name       = "${var.project_name}-db-subnet-group"
+  subnet_ids = var.database_subnet_ids
+}
+
+resource "aws_security_group" "rds" {
+  name        = "${var.project_name}-rds-sg"
+  description = "Allow PostgreSQL access from ECS tasks"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [var.ecs_security_group_id]
+    description     = "PostgreSQL from ECS"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_db_instance" "main" {
+  identifier = "${var.project_name}-db"
+
+  engine               = "postgres"
+  engine_version       = "16.4"
+  instance_class       = var.db_instance_class
+
+  allocated_storage     = var.db_allocated_storage
+  max_allocated_storage = var.db_max_storage
+  storage_type          = "gp3"
+  storage_encrypted     = true
+
+  db_name  = var.db_name
+  username = var.db_username
+  manage_master_user_password = true  # Secrets Manager で自動管理
+
+  db_subnet_group_name   = aws_db_subnet_group.main.name
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  publicly_accessible    = false  # 重要！
+
+  multi_az = var.multi_az
+
+  backup_retention_period = 7
+  backup_window          = "03:00-04:00"
+  maintenance_window     = "sun:04:00-sun:05:00"
+
+  deletion_protection = var.environment == "prod" ? true : false
+  skip_final_snapshot = var.environment == "prod" ? false : true
+
+  performance_insights_enabled = true
+
+  tags = {
+    Name        = "${var.project_name}-db"
+    Environment = var.environment
+  }
+}
+```
+
+> 💡 **プロのナレッジ: パスワード管理**: `manage_master_user_password = true` を使うと、AWS Secrets Manager が自動的にパスワードを生成・管理します。**「シークレットはコードに書かない」** — これはプロエンジニアの鉄則です。
+
+### 5.4 ECR（コンテナレジストリ）の構築
+
+```hcl
+resource "aws_ecr_repository" "backend" {
+  name                 = "${var.project_name}/backend"
+  image_tag_mutability = "IMMUTABLE"  # 同じタグで上書き不可
+
+  image_scanning_configuration {
+    scan_on_push = true  # push 時に脆弱性スキャン
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "backend" {
+  repository = aws_ecr_repository.backend.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "最新 20 イメージだけ保持"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 20
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+```
+
+| 設定 | 理由 |
+|------|------|
+| `image_tag_mutability = "IMMUTABLE"` | `latest` タグの上書きによる「どのバージョンが本番にいるか分からない」問題を防ぐ。ロールバックも確実に |
+| `scan_on_push = true` | ECR が自動で脆弱性スキャン |
+| ライフサイクルポリシー | 古いイメージの蓄積によるストレージコストを抑える |
+
+### 5.5 本番用 Dockerfile（マルチステージビルド）
+
+```dockerfile
+# backend/Dockerfile.prod
+
+# --- Stage 1: 依存関係のインストール ---
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# --- Stage 2: 本番イメージ ---
+FROM python:3.12-slim AS runtime
+
+# セキュリティ: root ユーザーで実行しない
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --shell /bin/bash appuser
+
+COPY --from=builder /install /usr/local
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpq5 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --chown=appuser:appuser ./app ./app
+COPY --chown=appuser:appuser ./migrations ./migrations
+COPY --chown=appuser:appuser alembic.ini .
+
+USER appuser
+EXPOSE 8000
+
+CMD ["python", "-m", "gunicorn", "app.main:app", \
+     "--bind", "0.0.0.0:8000", \
+     "--workers", "4", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--timeout", "120", \
+     "--access-logfile", "-"]
+```
+
+> 💡 **なぜマルチステージビルドを使うのか**:
+> 1. **イメージサイズ削減**: gcc やビルドツールを本番イメージに含めない（数百 MB 節約）
+> 2. **攻撃面の縮小**: 不要なツールがないため、攻撃者が利用できるものが少ない
+> 3. **起動速度向上**: イメージが小さいほど pull が速い
+>
+> **なぜ Gunicorn + Uvicorn worker なのか**:
+> - `uvicorn` 単体は**ワーカー管理機能がない**（プロセスが死んだら終わり）
+> - `gunicorn` がワーカーの**監視・再起動・シグナルハンドリング**を行う
+> - これは ASGI アプリケーションの本番デプロイにおける**業界標準のパターン**です
+
+### 5.6 ECS Fargate の構築
+
+#### ECS の 3 層構造
+
+| 層 | 説明 | 対応する概念 |
+|----|------|-------------|
+| **クラスタ** | コンテナの実行環境の「グループ」 | (最上位の入れ物) |
+| **サービス** | 「このコンテナを常時 N 個動かす」という定義 | docker-compose の `services:` |
+| **タスク定義** | コンテナの詳細設定（イメージ、CPU、メモリ、環境変数） | Dockerfile + docker-compose の設定 |
+
+```hcl
+# infrastructure/modules/ecs/main.tf
+
+resource "aws_ecs_cluster" "main" {
+  name = "${var.project_name}-cluster"
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "ecs" {
+  name              = "/ecs/${var.project_name}/backend"
+  retention_in_days = 30
+}
+
+# --- タスク実行ロール (ECS がイメージ pull / ログ出力に使う) ---
+resource "aws_iam_role" "ecs_execution" {
+  name = "${var.project_name}-ecs-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution" {
+  role       = aws_iam_role.ecs_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "ecs_secrets" {
+  name = "${var.project_name}-ecs-secrets-policy"
+  role = aws_iam_role.ecs_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = [var.db_secret_arn]
+    }]
+  })
+}
+
+# --- タスクロール (コンテナ内アプリが使う) ---
+resource "aws_iam_role" "ecs_task" {
+  name = "${var.project_name}-ecs-task-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+    }]
+  })
+}
+
+# --- セキュリティグループ ---
+resource "aws_security_group" "ecs" {
+  name        = "${var.project_name}-ecs-sg"
+  description = "Security group for ECS tasks"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [var.alb_security_group_id]
+    description     = "HTTP from ALB"
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# --- タスク定義 ---
+resource "aws_ecs_task_definition" "backend" {
+  family                   = "${var.project_name}-backend"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name  = "backend"
+    image = "${var.ecr_repository_url}:${var.image_tag}"
+
+    portMappings = [{
+      containerPort = 8000
+      protocol      = "tcp"
+    }]
+
+    environment = [
+      { name = "APP_ENV", value = var.environment },
+      { name = "POSTGRES_HOST", value = var.db_host },
+      { name = "POSTGRES_PORT", value = "5432" },
+      { name = "POSTGRES_DB", value = var.db_name },
+      { name = "POSTGRES_SSL", value = "true" },
+      { name = "CORS_ORIGINS", value = jsonencode(var.cors_origins) },
+      { name = "LOG_LEVEL", value = "INFO" },
+    ]
+
+    secrets = [
+      {
+        name      = "POSTGRES_USER"
+        valueFrom = "${var.db_secret_arn}:username::"
+      },
+      {
+        name      = "POSTGRES_PASSWORD"
+        valueFrom = "${var.db_secret_arn}:password::"
+      },
+      {
+        name      = "SECRET_KEY"
+        valueFrom = var.jwt_secret_arn
+      },
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "backend"
+      }
+    }
+
+    healthCheck = {
+      command     = ["CMD-SHELL", "python -c \"import httpx; r = httpx.get('http://localhost:8000/api/health/live'); r.raise_for_status()\""]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 60
+    }
+  }])
+}
+
+# --- ECS サービス ---
+resource "aws_ecs_service" "backend" {
+  name            = "${var.project_name}-backend"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.backend.arn
+  desired_count   = var.desired_count
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = var.private_subnet_ids
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = var.target_group_arn
+    container_name   = "backend"
+    container_port   = 8000
+  }
+
+  deployment_configuration {
+    maximum_percent         = 200
+    minimum_healthy_percent = 100
+  }
+
+  health_check_grace_period_seconds = 60
+}
+```
+
+> 💡 **`execution_role_arn` vs `task_role_arn`**: `execution_role` は「ECS がコンテナを起動するのに必要な権限（ECR からの pull、ログ出力）」、`task_role` は「コンテナ内のアプリが使う権限（S3 アクセス等）」。権限を最小限に分離する設計です。
+
+> 💡 **`environment` vs `secrets`**: 平文で良い値は `environment`、秘密値は `secrets`（Secrets Manager から取得）。本アプリの `app/core/config.py` で環境変数を読み取っているのと同じ思想 — **秘密は特別扱いする**。
+
+#### ローリングアップデート
+
+```
+デプロイ前:  [v1] [v1]                    ← 2 タスク稼働中
+デプロイ中:  [v1] [v1] [v2] [v2]          ← 新バージョンを追加起動
+ヘルスチェック通過後: [v2] [v2]            ← 旧バージョンを停止
+```
+
+`minimum_healthy_percent = 100` により、古いタスクは新しいタスクが正常に起動するまで停止されません。ユーザーはサービス中断を一切感じません。これが**ゼロダウンタイムデプロイ**です。
+
+#### Auto Scaling
+
+```hcl
+resource "aws_appautoscaling_target" "ecs" {
+  max_capacity       = var.max_capacity
+  min_capacity       = var.min_capacity
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.backend.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "cpu" {
+  name               = "${var.project_name}-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.ecs.resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.ecs.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = 70.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+```
+
+### 5.7 S3 + CloudFront（フロントエンド配信）
+
+#### なぜ S3 + CloudFront なのか
+
+| 方法 | 月額コスト | レイテンシ | スケーラビリティ |
+|------|-----------|-----------|--------------|
+| ECS でフロントも動かす | ~$30+ | 高（東京のみ） | 手動 |
+| **S3 + CloudFront** | **~$1-5** | **極低（世界中のエッジ）** | **無限** |
+
+```hcl
+# infrastructure/modules/s3-cloudfront/main.tf
+
+resource "aws_s3_bucket" "frontend" {
+  bucket = "${var.project_name}-frontend-${var.environment}"
+}
+
+resource "aws_s3_bucket_public_access_block" "frontend" {
+  bucket = aws_s3_bucket.frontend.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_policy" "frontend" {
+  bucket = aws_s3_bucket.frontend.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowCloudFrontOAC"
+      Effect    = "Allow"
+      Principal = { Service = "cloudfront.amazonaws.com" }
+      Action    = "s3:GetObject"
+      Resource  = "${aws_s3_bucket.frontend.arn}/*"
+      Condition = {
+        StringEquals = {
+          "AWS:SourceArn" = aws_cloudfront_distribution.frontend.arn
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_cloudfront_origin_access_control" "frontend" {
+  name                              = "${var.project_name}-frontend-oac"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
+}
+
+resource "aws_cloudfront_distribution" "frontend" {
+  enabled             = true
+  default_root_object = "index.html"
+  aliases             = [var.domain_name]
+
+  origin {
+    domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
+    origin_id                = "s3-frontend"
+    origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
+  }
+
+  default_cache_behavior {
+    allowed_methods  = ["GET", "HEAD"]
+    cached_methods   = ["GET", "HEAD"]
+    target_origin_id = "s3-frontend"
+
+    forwarded_values {
+      query_string = false
+      cookies { forward = "none" }
+    }
+
+    viewer_protocol_policy = "redirect-to-https"
+    min_ttl                = 0
+    default_ttl            = 86400
+    max_ttl                = 31536000
+    compress               = true
+  }
+
+  # SPA 用: 全パスを index.html にフォールバック
+  custom_error_response {
+    error_code         = 403
+    response_code      = 200
+    response_page_path = "/index.html"
+  }
+
+  custom_error_response {
+    error_code         = 404
+    response_code      = 200
+    response_page_path = "/index.html"
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = var.certificate_arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+
+  restrictions {
+    geo_restriction { restriction_type = "none" }
+  }
+}
+```
+
+> 💡 **SPA のフォールバック設定**: React Router を使う SPA では、ユーザーが `/login` に直接アクセスすると S3 は 404 を返します。`custom_error_response` で `index.html` にフォールバックすることで、React Router がクライアントサイドで正しくルーティングします。これは SPA を S3 + CloudFront でホスティングする際の**必須設定**です。
+
+> 🛠 **S3 バケットを直接公開してはいけない理由**: バケットを「パブリック」にすると世界中から全ファイルにアクセスできてしまいます。CloudFront 経由のみ許可することで、(1) HTTPS 強制、(2) キャッシュによる高速化、(3) WAF との連携、が可能になります。
+
+### 5.8 Route 53 + ACM（ドメインと HTTPS）
+
+#### なぜ HTTPS が必須なのか
+
+- **暗号化**: 通信内容（パスワード、トークン等）の盗聴を防止
+- **認証**: 接続先が本物のサーバーであることを証明
+- **SEO**: Google は HTTPS サイトを優遇
+- **ブラウザ警告**: HTTP サイトは「安全ではありません」と警告表示される
+- **Cookie**: `Secure` フラグ付き Cookie は HTTPS でのみ送信される
+
+```hcl
+# ACM 証明書（CloudFront 用: 必ず us-east-1）
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+}
+
+resource "aws_acm_certificate" "frontend" {
+  provider          = aws.us_east_1
+  domain_name       = var.domain_name
+  validation_method = "DNS"
+
+  subject_alternative_names = ["*.${var.domain_name}"]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# DNS 検証レコード
+resource "aws_route53_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.frontend.domain_validation_options :
+    dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  zone_id = var.hosted_zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+  records = [each.value.record]
+}
+```
+
+> 💡 **なぜ CloudFront の証明書は us-east-1 でなければならないのか**: CloudFront はグローバルサービスであり、証明書の管理は `us-east-1` に集約されています。これは AWS のアーキテクチャ上の制約であり、よく見落とされるポイントです。
+
+### 5.9 セキュリティグループ — 多層防御
+
+```hcl
+# ALB: インターネットから HTTPS のみ受け入れ
+resource "aws_security_group" "alb" {
+  name   = "${var.project_name}-alb"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# ECS: ALB からのみ受け入れ
+resource "aws_security_group" "ecs" {
+  name   = "${var.project_name}-ecs"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+}
+
+# RDS: ECS からのみ受け入れ
+resource "aws_security_group" "rds" {
+  name   = "${var.project_name}-rds"
+  vpc_id = aws_vpc.main.id
+
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ecs.id]
+  }
+}
+```
+
+> 💡 **多層防御**: ALB → ECS → RDS の各段で、前段からのトラフィックのみを許可。本アプリの `app/core/middleware.py` でミドルウェアスタックを積み重ねているのと同じ「多層で防御する」設計です。
+
+### 理解度チェック (第 5 部)
+
+- Docker Compose の各サービスが AWS のどのサービスにマッピングされるか言えるか?
+- ECS の「クラスタ / サービス / タスク定義」の 3 層構造を説明できるか?
+- `execution_role_arn` と `task_role_arn` の違いを説明できるか?
+- セキュリティグループで ALB → ECS → RDS の通信を「前段からのみ許可」にする理由を説明できるか?
+- S3 バケットを直接公開せず CloudFront 経由にする理由を 3 つ挙げられるか?
+
+---
+
+## 第 6 部 — GitHub Actions の基礎
+
+> **この部で分かること**: GitHub Actions のアーキテクチャ (Workflow / Job / Step / Runner) / YAML の構文 / トリガー / permissions / Secrets / 再利用可能なワークフロー。
+
+### 6.1 ワークフローの 4 層構造
+
+```yaml
+# .github/workflows/example.yml ← Workflow
+
+name: Example                   # ワークフロー名
+on: push                        # トリガー
+
+jobs:                            # ← Job の集合
+  build:                         # ← 1 つの Job
+    runs-on: ubuntu-latest       # ← Runner (実行環境)
+    steps:                       # ← Step の集合
+      - uses: actions/checkout@v4       # ← Step 1 (Action)
+      - run: echo "Hello, World!"       # ← Step 2 (コマンド)
+```
+
+| 層 | 説明 | 対応する概念 |
+|----|------|-------------|
+| **Workflow** | 1 つの YAML ファイル = 1 つのワークフロー | 「CI パイプライン」全体 |
+| **Job** | 独立した仮想マシン上で実行。**Job 間は並列実行** | docker-compose の 1 サービス |
+| **Step** | Job 内で順番に実行される 1 つの操作 | Dockerfile の 1 行 |
+| **Runner** | Step を実行する仮想マシン | docker の `FROM` イメージ |
+
+> 💡 **核心**: 各 Job は**独立した仮想マシン**上で動きます。だから Job A でインストールしたパッケージは Job B からは見えません。
+
+### 6.2 トリガー (`on`)
+
+```yaml
+on:
+  push:
+    branches: [main]           # main への push
+  pull_request:
+    branches: [main]           # main への PR
+  schedule:
+    - cron: "0 3 * * 1"       # 毎週月曜 03:00 UTC
+  workflow_dispatch:           # 手動実行
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+```
+
+### 6.3 permissions — 最小権限
+
+```yaml
+permissions: read-all  # デフォルトをすべて読み取りのみに
+
+jobs:
+  deploy:
+    permissions:
+      id-token: write    # OIDC に必要
+      contents: read
+```
+
+> ⚠️ **`permissions: read-all` を必ず設定する**: GitHub Actions のデフォルト権限は `write-all`（全権限）です。万一 Action にサプライチェーン攻撃があっても被害を最小限にするため、明示的に最小権限にします。
+
+### 6.4 環境変数と Secrets
+
+| 種類 | 保管場所 | 見え方 |
+|------|---------|--------|
+| **環境変数** | YAML に平文で記載 | ログに表示される |
+| **Secrets** | GitHub の Settings > Secrets | ログに `***` でマスクされる |
+| **Variables** | GitHub の Settings > Variables | 非機密設定値向け |
+
+> ⚠️ **Secrets の取り扱い**: Secrets は一度設定すると値を再確認できません。**Secrets を `echo` で出力するのは絶対にやめてください**。
+
+### 6.5 Action の使い方とセキュリティ
+
+```yaml
+# ✅ SHA ピンニング — 推奨
+- uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+# ⚠️ タグ指定 — 上書き可能なため非推奨
+- uses: actions/checkout@v4
+
+# ❌ ブランチ指定 — 最も危険
+- uses: actions/checkout@main
+```
+
+> 💡 **SHA ピンニングの理由**: Action の作者がタグを差し替えても、使っているコードが変わらないことを保証します。サプライチェーン攻撃対策の基本です。
+
+### 6.6 Job 間のデータ受け渡し — Artifacts
+
+```yaml
+jobs:
+  build:
+    steps:
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 1
+
+  deploy:
+    needs: [build]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+      - run: aws s3 sync frontend/dist/ s3://test-app-frontend/
+```
+
+> 💡 **Artifacts は「Job 間の宅配便」**: build Job で作った成果物を upload し、deploy Job で download する。仮想マシンが違っても、GitHub がファイルを中継してくれます。
+
+### 6.7 concurrency — 同時実行の制御
+
+```yaml
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+> 💡 **実用上の効果**: PR に 3 回連続で push すると、最初の 2 回の CI は自動キャンセルされ、最新の CI だけが実行されます。
+
+### 6.8 matrix — 複数バージョンでの並列テスト
+
+```yaml
+strategy:
+  fail-fast: false
+  matrix:
+    python-version: ["3.12", "3.13"]
+```
+
+### 6.9 services — CI 内でのサービスコンテナ
+
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    env:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: test_db
+    ports:
+      - 5432:5432
+    options: >-
+      --health-cmd="pg_isready"
+      --health-interval=10s
+      --health-timeout=5s
+      --health-retries=5
+```
+
+> 💡 **docker-compose との対比**: CI で PostgreSQL を使ったテストを実行するために、ランナー上に PostgreSQL コンテナを起動しています。
+
+### 6.10 再利用可能なワークフロー (Reusable Workflows)
+
+```yaml
+# .github/workflows/reusable-docker-build.yml (テンプレート側)
+on:
+  workflow_call:
+    inputs:
+      context:
+        required: true
+        type: string
+    secrets:
+      aws_role_arn:
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build ${{ inputs.context }}
+```
+
+```yaml
+# .github/workflows/deploy.yml (呼び出し側)
+jobs:
+  build-backend:
+    uses: ./.github/workflows/reusable-docker-build.yml
+    with:
+      context: backend
+    secrets:
+      aws_role_arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+```
+
+> 💡 **共通パターンを 1 箇所に定義し、差異だけをパラメータで注入する** — バックエンドの `repositories/base.py` が CRUD 操作を汎化しているのと同じ発想です。
+
+### 6.11 よくあるつまずきポイント
+
+| 症状 | 原因 | 対処 |
+|------|------|------|
+| `Process completed with exit code 1` | Step のコマンドが失敗 | ログを展開してエラーメッセージを確認 |
+| `Resource not accessible by integration` | permissions 不足 | `permissions:` に必要な権限を追加 |
+| `No space left on device` | ランナーのディスクが満杯 | Docker イメージの prune を Step に追加 |
+| テストが CI で落ちる | 環境差 | ランナーの OS / Node / Python バージョンを確認 |
+| `Cannot find module` (npm) | `npm ci` の漏れ | `npm install` ではなく `npm ci` を使う |
+| 突然 CI が壊れる | 依存のバージョン | lockfile をコミットしているか確認 |
+
+### 理解度チェック (第 6 部)
+
+- Workflow / Job / Step / Runner の 4 層構造を説明できるか?
+- `permissions: read-all` をデフォルトにする理由を説明できるか?
+- Action を SHA ピンニングする理由を、タグ指定のリスクと対比して説明できるか?
+- Job 間のデータ受け渡しに Artifacts を使う理由を「独立した仮想マシン」の観点で説明できるか?
+
+---
+
+## 第 7 部 — CI パイプライン: 品質を守る自動化
+
+> **この部で分かること**: CI パイプラインの設計 / Job の依存関係と並列化 / キャッシュ戦略 / マイグレーション往復検証 / compose-smoke テスト。
+
+### 7.1 CI パイプラインの全体像
+
+```
+[push / PR]
+     │
+     ├── backend-lint (ruff check, ruff format --check, mypy)
+     ├── backend-test (pytest + DB + マイグレーション往復)
+     ├── frontend-lint (eslint, tsc --noEmit)
+     └── frontend-build (npm run build)
+              │
+              └── compose-smoke (docker compose up + ヘルスチェック + API 呼び出し)
+```
+
+> 💡 **設計の意図**: lint / test / build は**互いに独立なので並列実行**。compose-smoke は「全 Job が成功したら実行」— **`needs` で依存を明示**。
+
+### 7.2 キャッシュ戦略 — CI を速くする
+
+CI が遅いと開発者はフィードバックを待てず、CI を無視するようになります。**CI は速くなければ意味がない**。
+
+```yaml
+- uses: actions/setup-python@v5
+  with:
+    python-version: "3.12"
+    cache: pip
+    cache-dependency-path: backend/requirements-dev.txt
+```
+
+| ステップ | キャッシュなし | キャッシュあり |
+|---------|-------------|-------------|
+| `pip install` | 60〜90 秒 | 3〜5 秒 |
+| `npm ci` | 30〜60 秒 | 5〜10 秒 |
+| **CI 全体** | 5〜8 分 | 2〜4 分 |
+
+> 💡 **`npm ci` vs `npm install`**: CI では必ず `npm ci` を使います。`npm ci` は `package-lock.json` に厳密に従い、`node_modules` を丸ごと削除してからインストールします。再現性を保証するためです。
+
+### 7.3 マイグレーション往復検証
+
+```yaml
+- run: alembic upgrade head          # 最新まで適用
+- run: alembic downgrade -1          # 1 つ戻す
+- run: alembic upgrade head          # もう一度適用
+```
+
+これにより:
+- `downgrade()` の実装漏れを検知
+- スキーマの整合性を検証
+- 「デプロイしたが障害が起きて巻き戻したい」ときに安全に戻せることを保証
+
+### 7.4 compose-smoke テスト
+
+```yaml
+compose-smoke:
+  needs: [backend-test, frontend-build]
+  steps:
+    - run: docker compose up -d --build
+    - name: backend の readiness を待つ
+      run: |
+        for i in $(seq 1 30); do
+          if curl -fsS http://localhost:8000/api/health/ready >/dev/null; then
+            echo "backend ready"
+            exit 0
+          fi
+          sleep 2
+        done
+        exit 1
+    - name: frontend の到達性を確認
+      run: curl -fsS http://localhost:5173/ -o /dev/null
+    - name: backend → DB 連携の確認
+      run: |
+        curl -fsS -X POST http://localhost:8000/api/auth/register \
+          -H 'Content-Type: application/json' \
+          -d '{"email":"smoke@example.com","password":"correct-horse-battery"}'
+```
+
+**compose-smoke が検証すること**:
+1. Docker Compose が壊れていないこと
+2. Backend のヘルスチェック（DB マイグレーション含む）
+3. Frontend の到達性
+4. Backend → DB の連携（テーブルが存在し書き込めること）
+
+> 💡 **これは「E2E テスト未満、単体テスト以上」**: 単体テストでは検証できない「コンテナ間の連携」「環境変数の受け渡し」「ポートマッピング」を検証します。
+
+### 7.5 CI ベストプラクティスまとめ
+
+| プラクティス | 理由 |
+|-------------|------|
+| **並列化** | CI 時間の短縮 |
+| **キャッシュ** | 依存インストール時間の短縮 |
+| **fail-fast: false** | 全バージョンの結果を得る |
+| **concurrency** | リソース節約 |
+| **SHA ピンニング** | サプライチェーン攻撃対策 |
+| **最小権限** | 権限の過剰付与を防止 |
+| **スモークテスト** | 統合レベルでの退行検知 |
+
+### 理解度チェック (第 7 部)
+
+- CI パイプラインの Job 間依存関係を図に描けるか?
+- マイグレーション往復検証が検知する問題を 2 つ挙げられるか?
+- compose-smoke テストが単体テストでは検証できない問題を 3 つ挙げられるか?
+
+---
+
+## 第 8 部 — CD パイプライン: AWS へ自動デプロイ
+
+> **この部で分かること**: CD パイプラインの設計 / OIDC での AWS 認証 / Docker build → ECR push / ECS サービスの更新 / マイグレーション戦略 / ロールバック / GitHub Environments。
+
+### 8.1 CD パイプラインの 6 ステップ
+
+```
+[CI 通過] → [AWS 認証] → [ECR Push] → [DB Migration] → [ECS 更新] → [ヘルスチェック]
+```
+
+### 8.2 完全な CD ワークフロー
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false  # デプロイは途中キャンセルしない
+
+permissions: read-all
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: test-app/backend
+  ECS_CLUSTER: test-app-cluster
+  ECS_SERVICE: test-app-backend
+  S3_BUCKET: test-app-frontend-prod
+
+jobs:
+  # ==============================
+  # テスト
+  # ==============================
+  test-backend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: pip install -r requirements-dev.txt
+      - name: Lint
+        working-directory: backend
+        run: ruff check .
+      - name: Type check
+        working-directory: backend
+        run: mypy app/
+      - name: Test
+        working-directory: backend
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        run: pytest --cov=app --cov-report=xml
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  # ==============================
+  # バックエンドデプロイ
+  # ==============================
+  deploy-backend:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC で AWS 認証
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ECR にログイン
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      # Docker イメージのビルド & プッシュ
+      - name: Build and push
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -f backend/Dockerfile.prod \
+            backend/
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      # DB マイグレーション実行
+      - name: Run migrations
+        run: |
+          aws ecs run-task \
+            --cluster $ECS_CLUSTER \
+            --task-definition test-app-migration \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[subnet-xxx],securityGroups=[sg-xxx]}" \
+            --overrides '{"containerOverrides":[{"name":"backend","command":["alembic","upgrade","head"]}]}'
+
+      # タスク定義を更新
+      - name: Update task definition
+        id: task-def
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $ECS_SERVICE \
+            --query 'taskDefinition' > task-def.json
+
+          jq --arg IMAGE "${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" \
+            '.containerDefinitions[0].image = $IMAGE' task-def.json > updated-task-def.json
+
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            updated-task-def.json > clean-task-def.json
+
+          ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://clean-task-def.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      # ECS サービスを更新
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition ${{ steps.task-def.outputs.arn }} \
+            --force-new-deployment
+
+      # デプロイ完了を待つ
+      - name: Wait for stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE
+
+      # 失敗時にログを収集
+      - name: Collect failure info
+        if: failure()
+        run: |
+          echo "::error::デプロイが失敗しました"
+          aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE \
+            --query 'services[0].events[:10]'
+
+  # ==============================
+  # フロントエンドデプロイ
+  # ==============================
+  deploy-frontend:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: https://api.example.com/api
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy to S3
+        run: |
+          # アセット: 1年キャッシュ (Vite がハッシュ付きファイル名を生成)
+          aws s3 sync frontend/dist/ s3://$S3_BUCKET/ \
+            --delete \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "index.html" \
+            --exclude "*.json"
+
+          # index.html: キャッシュなし (常に最新を返す)
+          aws s3 cp frontend/dist/index.html s3://$S3_BUCKET/index.html \
+            --cache-control "no-cache, no-store, must-revalidate"
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/index.html"
+```
+
+> ⚠️ **`cancel-in-progress: false`**: CI と違い、デプロイは途中キャンセル**しません**。途中でキャンセルすると中間状態になるリスクがあります。
+
+> 💡 **キャッシュ戦略**: JS/CSS ファイルは Vite がファイル名にハッシュを付けるため `max-age=31536000`（1年）でキャッシュ可能。`index.html` は常に最新を返す必要があるため `no-cache`。更新時は `index.html` だけ CloudFront で無効化すれば OK。
+
+### 8.3 マイグレーション戦略
+
+```
+[Docker イメージビルド] → [ECR Push] → [マイグレーション実行 ★] → [ECS サービス更新]
+```
+
+> **重要**: マイグレーションは**新しいコンテナのデプロイ前**に実行します。ただし、**破壊的変更**（カラム削除等）は 2 段階に分けます：
+>
+> 1. デプロイ A: コードから旧カラムの参照を削除
+> 2. デプロイ B: マイグレーションで旧カラムを削除
+>
+> これにより、ローリングアップデート中に旧コードと新コードが共存しても問題が起きません。
+
+### 8.4 GitHub Environments — デプロイの安全装置
+
+```yaml
+jobs:
+  deploy-staging:
+    environment: staging
+
+  deploy-production:
+    environment: production
+    needs: [deploy-staging]
+```
+
+| 機能 | 説明 |
+|------|------|
+| **Environment Secrets** | 環境ごとに異なる Secrets |
+| **Protection Rules** | 「production へのデプロイは承認が必要」 |
+| **Deployment Branches** | 「production へは main ブランチからのみ」 |
+| **Wait Timer** | 「staging デプロイ後、5 分待ってから production」 |
+
+> 💡 **本番デプロイの承認フロー**: `environment: production` + `required_reviewers` を設定すると、GitHub UI 上で「承認」ボタンを押さないとデプロイが実行されません。
+
+### 8.5 ロールバック戦略
+
+```bash
+# 方法 1: 前のタスク定義に戻す
+aws ecs update-service \
+  --cluster test-app-cluster \
+  --service test-app-backend \
+  --task-definition test-app-backend:42  # 前のリビジョン番号
+
+# 方法 2: 前のコミットの Git SHA でイメージを指定
+# ECR に IMMUTABLE タグで全バージョンが残っているので、
+# いつでも任意のバージョンに戻せる
+```
+
+> 💡 **IMMUTABLE タグの重要性**: 各コミットのイメージが確実に保存されているため、いつでもロールバック可能。
+>
+> **マイグレーションのロールバック**: CI で往復検証を通過しているので、`alembic downgrade -1` で安全にスキーマを戻せます。
+
+### 理解度チェック (第 8 部)
+
+- CD パイプラインの 6 ステップを順番に言えるか?
+- `cancel-in-progress: false` を CD に設定する理由を説明できるか?
+- Rolling Update でダウンタイムゼロが実現する仕組みを説明できるか?
+- GitHub Environments の Protection Rules がなぜ重要か説明できるか?
+- ロールバックに「ECR の IMMUTABLE タグ」と「マイグレーション往復検証」がどう貢献するか説明できるか?
+
+---
+
+## 第 9 部 — セキュリティ・運用・次のステップ
+
+> **この部で分かること**: CI/CD パイプライン全体のセキュリティ設計 / Branch Protection / 監視とアラート / WAF / コスト最適化 / 次に学ぶべきこと。
+
+### 9.1 Branch Protection Rules — main を守る城壁
+
+| 設定 | 効果 |
+|------|------|
+| **Require pull request reviews** | 最低 1 人の Approve なしにマージできない |
+| **Require status checks to pass** | CI が全部 green でないとマージできない |
+| **Require branches to be up to date** | main が進んだら、PR ブランチをリベースして再テスト |
+| **Do not allow bypassing** | 管理者も例外なし |
+
+> 💡 **「CI を通過したコードだけが main に入る」保証**: Branch Protection がないと、CI を無視して直接 push でき、テストされていないコードが本番にデプロイされるリスクがあります。
+
+### 9.2 セキュリティチェックリスト
+
+| # | 項目 | CI/CD での実現方法 |
+|---|------|-------------------|
+| 1 | ルートアカウントに MFA | IAM → MFA |
+| 2 | 全 IAM ユーザーに MFA | IAM → ユーザー |
+| 3 | OIDC 認証（長期鍵なし） | `aws-actions/configure-aws-credentials` |
+| 4 | IMMUTABLE イメージタグ | ECR `image_tag_mutability` |
+| 5 | 秘密値は Secrets Manager で管理 | ECS タスク定義の `secrets` |
+| 6 | RDS がパブリックアクセス不可 | `publicly_accessible = false` |
+| 7 | S3 がパブリックアクセスブロック | `block_public_acls = true` |
+| 8 | HTTPS のみ | CloudFront + ACM |
+| 9 | セキュリティグループの最小権限 | 必要ポート/IP のみ |
+| 10 | 通信の暗号化（RDS, S3） | `storage_encrypted = true` |
+| 11 | WAF の有効化 | CloudFront + WAF |
+| 12 | CloudTrail の有効化 | 全 API 呼び出しをログ |
+| 13 | Action の SHA ピンニング | SHA 固定 |
+| 14 | `permissions: read-all` | 最小権限 |
+| 15 | 本番デプロイ承認 | GitHub Environments |
+| 16 | 依存パッケージの脆弱性スキャン | pip-audit, npm audit |
+| 17 | コンテナイメージの脆弱性スキャン | ECR scan_on_push / Trivy |
+
+> 💡 **多層防御**: セキュリティは 1 箇所で守るのではなく、**何重にも壁を張る**のが原則です。1 つの壁が突破されても次の壁で止まるように。
+
+### 9.3 監視とアラート（CloudWatch）
+
+#### 4 つのゴールデンシグナル
+
+Google の SRE チームが提唱する、サービス監視の 4 つの指標：
+
+1. **レイテンシ**: リクエストの応答時間。P50, P95, P99 で測定
+2. **トラフィック**: リクエスト数/秒。正常な負荷を知ることで異常を検知
+3. **エラー率**: 5xx レスポンスの割合
+4. **飽和度**: CPU/メモリの使用率。飽和するとレイテンシが急増する
+
+```hcl
+# 5xx エラー率アラーム
+resource "aws_cloudwatch_metric_alarm" "high_5xx" {
+  alarm_name          = "${var.project_name}-high-5xx-rate"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 10
+  alarm_description   = "5xx errors exceeded threshold"
+
+  dimensions = {
+    TargetGroup  = var.target_group_arn_suffix
+    LoadBalancer = var.alb_arn_suffix
+  }
+
+  alarm_actions = [var.sns_topic_arn]
+}
+
+# CPU 使用率アラーム
+resource "aws_cloudwatch_metric_alarm" "high_cpu" {
+  alarm_name          = "${var.project_name}-high-cpu"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = 80
+
+  dimensions = {
+    ClusterName = var.cluster_name
+    ServiceName = var.service_name
+  }
+
+  alarm_actions = [var.sns_topic_arn]
+}
+```
+
+### 9.4 WAF（Web Application Firewall）
+
+```hcl
+resource "aws_wafv2_web_acl" "main" {
+  name  = "${var.project_name}-waf"
+  scope = "CLOUDFRONT"
+
+  default_action { allow {} }
+
+  # AWS マネージドルール: 一般的な攻撃パターンをブロック
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 1
+    override_action { none {} }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesCommonRuleSet"
+      }
+    }
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "CommonRuleSetMetric"
+    }
+  }
+
+  # SQLi 攻撃の検出・ブロック
+  rule {
+    name     = "AWSManagedRulesSQLiRuleSet"
+    priority = 2
+    override_action { none {} }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesSQLiRuleSet"
+      }
+    }
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "SQLiRuleSetMetric"
+    }
+  }
+
+  # レートリミット
+  rule {
+    name     = "RateLimit"
+    priority = 3
+    action { block {} }
+    statement {
+      rate_based_statement {
+        limit              = 2000
+        aggregate_key_type = "IP"
+      }
+    }
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "RateLimitMetric"
+    }
+  }
+
+  visibility_config {
+    sampled_requests_enabled   = true
+    cloudwatch_metrics_enabled = true
+    metric_name                = "WAFMetric"
+  }
+}
+```
+
+> 💡 **アプリ層の防御と WAF**: バックエンドの `app/core/rate_limit.py` でレートリミットを実装していますが、WAF は**ネットワーク層で**既知の攻撃パターンをブロックします。多層防御の「最外殻」です。
+
+### 9.5 コスト最適化のヒント
+
+| 対策 | 効果 |
+|------|------|
+| **Fargate Spot** | 最大 70% 割引（中断される可能性あり → staging 向き） |
+| **ARM (Graviton)** | x86 比で約 20% 安く、性能も高い |
+| **ECR ライフサイクルポリシー** | 古いイメージの自動削除でストレージコスト削減 |
+| **CloudWatch ログの保持期間** | 無期限ではなく 30 日 or 90 日に設定 |
+| **RDS の Reserved Instance** | 1 年契約で最大 40% 割引 |
+| **NAT Gateway の代替** | VPC エンドポイントで ECR/S3 にインターネット経由せず接続 |
+| **GitHub Actions の無料枠** | パブリックリポジトリは無料。プライベートは月 2,000 分 |
+| **Savings Plans** | ECS 使用量の事前コミットで最大 20% 割引 |
+
+> 💡 **Graviton (ARM) への移行**: 本アプリの Docker イメージは `python:3.12-slim` ベースで特定アーキテクチャに依存しないため、Fargate のプラットフォームを `LINUX/ARM64` に変えるだけで移行できます。
+
+### 9.6 次に学ぶべきこと
+
+| テーマ | 概要 |
+|--------|------|
+| **Terraform のテスト** | `terraform test`, `Terratest` による IaC の自動テスト |
+| **マルチ環境管理** | Terraform Workspaces / Terragrunt で staging/production を効率管理 |
+| **ブルー/グリーンデプロイ** | トラフィックの瞬間切り替え |
+| **カナリアデプロイ** | 新バージョンをトラフィックの一部にだけ流す |
+| **Feature Flags** | コードデプロイとリリースを分離 |
+| **負荷テスト** | Locust / k6 でデプロイ前にパフォーマンスを検証 |
+| **GitOps** | ArgoCD / Flux で宣言的デプロイ |
+| **Kubernetes (EKS)** | ECS からの次のステップ |
+| **マルチリージョン** | 災害復旧 (DR) のための複数リージョン展開 |
+
+### 9.7 デプロイの段階
+
+初日からすべてを完璧にする必要はありません。段階的に進めましょう：
+
+```
+Phase 1: 手動デプロイ
+  → AWS コンソールで手動構築し、各サービスの仕組みを理解する
+
+Phase 2: Terraform 化
+  → 手動で作ったものを Terraform のコードに書き直す
+
+Phase 3: CI/CD パイプライン
+  → GitHub Actions で自動デプロイを構築
+
+Phase 4: 監視・アラート
+  → CloudWatch + SNS でエラー監視を追加
+
+Phase 5: セキュリティ強化
+  → WAF、VPC エンドポイント、GuardDuty 等を追加
+```
+
+### 9.8 Twelve-Factor App
+
+クラウドネイティブアプリケーション設計の12原則：
+
+1. **コードベース**: 1つのコードベースで複数環境にデプロイ
+2. **依存関係**: 依存を明示的に宣言（requirements.txt, package.json）
+3. **設定**: 設定は環境変数で注入（コードにハードコードしない）
+4. **バックエンドサービス**: DB 等をアタッチされたリソースとして扱う
+5. **ビルド/リリース/実行**: ビルドと実行を厳密に分離
+6. **プロセス**: アプリはステートレスに設計
+7. **ポートバインディング**: ポートをバインドしてサービスを公開
+8. **並行性**: プロセスモデルでスケールアウト（ECS のタスク数増減）
+9. **廃棄容易性**: プロセスの迅速な起動と優雅なシャットダウン
+10. **開発/本番一致**: 開発と本番をできるだけ同じに保つ
+11. **ログ**: ログをイベントストリームとして扱う（stdout → CloudWatch）
+12. **管理プロセス**: 管理タスクはワンオフプロセスとして実行
+
+### 最終理解度チェック (第 9 部)
+
+- CI/CD パイプライン全体のセキュリティを「多層防御」の観点で説明できるか?
+- Branch Protection Rules が CI/CD パイプラインの信頼性にどう貢献するか説明できるか?
+- 4 つのゴールデンシグナルを挙げられるか?
+- 本番運用で最低限必要な CloudWatch アラームを 3 つ挙げられるか?
+- 本書の内容を GCP や Azure に応用するとき、何が変わり何が変わらないか説明できるか?
+
+---
+
+## コスト見積もり
+
+### 最小構成（開発/検証用）— 月額約 $60-100
+
+| サービス | スペック | 月額 |
+|----------|---------|------|
+| ECS Fargate | 0.25 vCPU, 512 MB × 1 タスク | ~$10 |
+| RDS | db.t3.micro, Single-AZ, 20 GB | ~$15 |
+| ALB | 固定費 + LCU | ~$20 |
+| NAT Gateway | 1 AZ | ~$35 |
+| S3 + CloudFront | 低トラフィック | ~$1 |
+| Route 53 | 1 ホストゾーン | ~$0.50 |
+| **合計** | | **~$80** |
+
+### 本番構成 — 月額約 $200-400
+
+| サービス | スペック | 月額 |
+|----------|---------|------|
+| ECS Fargate | 0.5 vCPU, 1 GB × 2 タスク | ~$40 |
+| RDS | db.t3.small, Multi-AZ, 50 GB | ~$50 |
+| ALB | | ~$25 |
+| NAT Gateway | 2 AZ | ~$70 |
+| S3 + CloudFront | 中トラフィック | ~$5 |
+| WAF | | ~$10 |
+| CloudWatch | ログ + メトリクス | ~$10 |
+| **合計** | | **~$210** |
+
+> 💡 **NAT Gateway が最大のコスト要因**（$0.062/h × 24h × 30d = $45/AZ）。開発環境では NAT Gateway を 1 AZ に限定するか、VPC エンドポイントで代替してください。
+
+---
+
+## トラブルシューティング
+
+### 「ECS タスクが起動しない / 起動と停止を繰り返す」
+
+```bash
+# 1. タスクの停止理由を確認
+aws ecs describe-tasks \
+  --cluster test-app-cluster \
+  --tasks $(aws ecs list-tasks --cluster test-app-cluster --service-name test-app-backend --query "taskArns[0]" --output text)
+
+# 2. ログを確認
+aws logs tail /ecs/test-app/backend --follow
+```
+
+よくある原因:
+- ECR からのイメージ pull 失敗 → タスク実行ロールの権限不足
+- 環境変数の設定ミス → Secrets Manager の ARN が間違い
+- ヘルスチェック失敗 → `startPeriod` を延長
+- ポート番号の不一致 → タスク定義とセキュリティグループのポートを確認
+
+### 「RDS に接続できない」
+
+チェックリスト:
+1. セキュリティグループ: ECS の SG から RDS の SG(5432) が許可されているか
+2. サブネット: ECS と RDS が同じ VPC 内にあるか
+3. 認証情報: Secrets Manager の値が正しいか
+4. `POSTGRES_HOST`: RDS のエンドポイント（`xxx.rds.amazonaws.com`）が設定されているか
+
+### 「CloudFront で 403 エラー」
+
+チェックリスト:
+1. S3 バケットポリシーで CloudFront の OAC が許可されているか
+2. S3 にファイルがアップロードされているか: `aws s3 ls s3://test-app-frontend-prod/`
+3. デフォルトルートオブジェクトが `index.html` になっているか
+
+### 「CORS エラー」
+
+```bash
+# テスト
+curl -H "Origin: https://app.example.com" \
+  -H "Access-Control-Request-Method: POST" \
+  -X OPTIONS \
+  https://api.example.com/api/health
+```
+
+チェックリスト:
+1. バックエンドの `CORS_ORIGINS` にフロントエンドのドメインが含まれているか
+2. ALB がヘッダーを正しく転送しているか
+3. CloudFront がキャッシュしている場合、Origin ヘッダーをフォワードしているか
+
+### 「OIDC で AccessDenied」
+
+90% は信頼ポリシーの `Condition` の問題:
+1. `sub` のリポジトリ名（`your-org/test_app`）が正しいか
+2. ブランチ制限（`ref:refs/heads/main`）と実際の push ブランチが一致するか
+3. `aud` が `sts.amazonaws.com` か
+4. GitHub Actions のログの `sub` と `aud` の値を確認
+
+### 「terraform plan で予期しない destroy」
+
+1. state と実リソースの乖離 → `terraform refresh` で同期
+2. リソース名の変更 → `terraform state mv` で state 内の名前を変更
+3. **`terraform destroy` を本番で実行してしまったら**: `deletion_protection = true` のリソースは残る。RDS のスナップショットから復旧可能
+
+### デプロイ失敗時の調査手順
+
+1. **GitHub Actions のログ**: どの Step で失敗したか確認
+2. **AWS コンソール → ECS**: サービスのイベントタブを確認
+3. **CloudWatch Logs**: コンテナの起動ログを確認
+4. **セキュリティグループ**: ネットワーク到達性を確認
+5. **IAM**: 権限不足がないか確認（CloudTrail で `AccessDenied` を検索）
+
+---
+
+## 用語集
+
+| 用語 | 説明 |
+|------|------|
+| **CI** | Continuous Integration。コード変更の自動検証 |
+| **CD** | Continuous Delivery/Deployment。検証済みコードの自動デプロイ |
+| **IAM** | Identity and Access Management。AWS の認証・認可サービス |
+| **OIDC** | OpenID Connect。外部 ID プロバイダとの信頼関係による認証 |
+| **MFA** | Multi-Factor Authentication。パスワード + ワンタイムコードの二重認証 |
+| **Terraform** | HashiCorp の IaC ツール。宣言的にインフラを管理 |
+| **IaC** | Infrastructure as Code。インフラをコードで定義・管理する手法 |
+| **HCL** | HashiCorp Configuration Language。Terraform の設定言語 |
+| **State** | Terraform が管理する「現在のインフラ状態」の記録 |
+| **ECR** | Elastic Container Registry。AWS の Docker イメージレジストリ |
+| **ECS** | Elastic Container Service。AWS のコンテナオーケストレータ |
+| **Fargate** | ECS の実行モード。サーバ管理不要でコンテナを実行 |
+| **ALB** | Application Load Balancer。HTTP/HTTPS のトラフィック振り分け |
+| **RDS** | Relational Database Service。AWS のマネージド DB |
+| **VPC** | Virtual Private Cloud。AWS 上の仮想プライベートネットワーク |
+| **AZ** | Availability Zone。リージョン内の独立したデータセンター群 |
+| **CIDR** | Classless Inter-Domain Routing。IP アドレス範囲の表記法 |
+| **ARN** | Amazon Resource Name。AWS リソースの一意識別子 |
+| **IGW** | Internet Gateway。VPC とインターネットを繋ぐ出入口 |
+| **NAT Gateway** | プライベートサブネットから外へ出る一方通行の扉 |
+| **SSM** | Systems Manager Parameter Store。設定値・秘密値の保管 |
+| **ACM** | AWS Certificate Manager。SSL/TLS 証明書の無料発行・自動更新 |
+| **Route 53** | AWS の DNS サービス |
+| **CloudFront** | AWS の CDN。世界中のエッジにキャッシュ |
+| **WAF** | Web Application Firewall。ネットワーク層での攻撃防御 |
+| **Rolling Update** | 新旧バージョンを徐々に切り替えるデプロイ方式 |
+| **SHA ピンニング** | Action のバージョンを Git SHA で固定する安全策 |
+| **Branch Protection** | ブランチへの直接 push を禁止し、CI 通過を必須にする設定 |
+| **Artifacts** | GitHub Actions の Job 間でファイルを受け渡す仕組み |
+| **Reusable Workflows** | ワークフローをテンプレートとして再利用する仕組み |
+| **Security Group** | AWS のファイアウォール。通信ルール |
+| **SBOM** | Software Bill of Materials。ソフトウェア部品表 |
+
+---
+
+## 実行チェックリスト
+
+デプロイ完了後、以下を確認してください：
+
+- [ ] `https://app.example.com` でフロントエンドが表示される
+- [ ] `https://api.example.com/api/health/live` がレスポンスを返す
+- [ ] ユーザー登録・ログインが正常に動作する
+- [ ] HTTPS でアクセスできる（HTTP は自動リダイレクト）
+- [ ] CloudWatch にログが出力されている
+- [ ] RDS のバックアップが設定されている
+- [ ] セキュリティグループが最小権限になっている
+- [ ] S3 バケットがパブリックアクセスブロックされている
+- [ ] Budget アラートが設定されている

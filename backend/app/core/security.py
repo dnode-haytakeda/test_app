@@ -32,8 +32,7 @@ def _secret() -> str:
     return settings.SECRET_KEY.get_secret_value()
 
 def _encode_token(payload: dict[str, Any]) -> str:
-    encoded = jwt.encode(payload, _secret(), algorithm=settings.JWT_ALGORITHM)
-    return encoded.decode("utf-8") if isinstance(encoded, bytes) else encoded
+    return jwt.encode(payload, _secret(), algorithm=settings.JWT_ALGORITHM)
 
 def create_access_token(
         subject: str,
@@ -73,7 +72,7 @@ def decode_token(
         algorithms=[settings.JWT_ALGORITHM],
         options={"require": ["sub", "jti", "iat", "nbf", "exp", "typ"]},
     )
-    if payload.get("type") != expected_type:
-        msg = f"Expected token type '{expected_type}', got '{payload.get('type')}'"
+    if payload.get("typ") != expected_type:
+        msg = f"Expected token type '{expected_type}', got '{payload.get('typ')}'"
         raise jwt.InvalidTokenError(msg)
     return payload
