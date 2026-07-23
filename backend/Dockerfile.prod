@@ -1,0 +1,41 @@
+# backend/Dockerfile.prod
+
+# --- Stage 1: 依存関係のインストール ---
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# --- Stage 2: 本番イメージ ---
+FROM python:3.12-slim AS runtime
+
+# セキュリティ: root ユーザーで実行しない
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --shell /bin/bash appuser
+
+COPY --from=builder /install /usr/local
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libpq5 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --chown=appuser:appuser ./app ./app
+COPY --chown=appuser:appuser ./migrations ./migrations
+COPY --chown=appuser:appuser alembic.ini .
+
+USER appuser
+EXPOSE 8000
+
+CMD ["python", "-m", "gunicorn", "app.main:app", \
+    "--bind", "0.0.0.0:8000", \
+    "--workers", "4", \
+    "--worker-class", "uvicorn.workers.UvicornWorker", \
+    "--timeout", "120", \
+    "--access-logfile", "-"]

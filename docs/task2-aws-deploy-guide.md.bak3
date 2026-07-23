@@ -202,117 +202,6 @@ flowchart TD
 
 ---
 
-## 🔧 事前準備 — AWS アカウントと Terraform State のセットアップ
-
-> **ファイル作成なし。AWS コンソールとターミナルでの操作のみ。**
-> 本書のステップに入る前に、以下を完了させてください。
-
-### 準備 1: AWS アカウント作成 & MFA 有効化
-
-> 🖥️ **AWS コンソール操作**
-
-1. [aws.amazon.com](https://aws.amazon.com/) → 「無料アカウントを作成」
-2. メールアドレス・パスワード・アカウント名を入力
-3. 支払い情報を登録（Free Tier 内なら課金されない）
-4. 電話番号認証 → アカウント作成完了
-
-**MFA の有効化（必須）:**
-
-5. AWS コンソールにログイン
-6. 右上のアカウント名 → 「セキュリティ認証情報」
-7. 「MFA デバイスの割り当て」→ 「MFA デバイスを割り当て」
-8. 「認証アプリケーション」を選択 → 次へ
-9. Google Authenticator / 1Password 等でQRコードをスキャン
-10. 確認コードを 2 回入力 → 完了
-
-> ⚠️ **MFA なしで本番 AWS を使うのは、家の鍵を開けっ放しにするのと同じです。**
-
-### 準備 2: IAM ユーザーの作成
-
-> 🖥️ **AWS コンソール操作**
-
-1. AWS コンソール → 「IAM」→ 左メニュー「ユーザー」
-2. 「ユーザーを作成」
-3. ユーザー名: `admin`（任意）
-4. 「AWS マネジメントコンソールへのユーザーアクセスを提供する」にチェック
-5. 「ユーザーにポリシーを直接アタッチする」→ `AdministratorAccess` を選択
-6. 「ユーザーの作成」→ ログイン URL・パスワードを控える
-7. **以後はこの IAM ユーザーでログインする**（ルートアカウントは使わない）
-
-### 準備 3: AWS CLI の設定
-
-> 🖥️ **ターミナル操作**
-
-```bash
-# インストール（macOS）
-brew install awscli
-
-# 設定
-aws configure
-# AWS Access Key ID: （IAM ユーザーのアクセスキーを入力）
-# AWS Secret Access Key: （シークレットキーを入力）
-# Default region name: ap-northeast-1
-# Default output format: json
-
-# 確認
-aws sts get-caller-identity
-# → "Account": "123456789012" のように表示されればOK
-```
-
-> 💡 **アクセスキーの取得**: IAM → ユーザー → `admin` → 「セキュリティ認証情報」→「アクセスキーを作成」→「CLI」を選択。
-
-### 準備 4: Budget アラートの設定
-
-> 🖥️ **AWS コンソール操作**
-
-1. AWS コンソール → 「Billing and Cost Management」→ 「Budgets」
-2. 「Create a budget」
-3. 「Cost budget」を選択
-4. 月額上限: `$10`（任意）
-5. 通知先メールアドレスを入力 → 作成
-
-### 準備 5: Terraform のインストール
-
-> 🖥️ **ターミナル操作**
-
-```bash
-# macOS (Homebrew)
-brew tap hashicorp/tap && brew install hashicorp/tap/terraform
-
-# 確認
-terraform --version
-```
-
-### 準備 6: Terraform State 管理用 S3 バケットの手動作成
-
-> 🖥️ **AWS コンソール操作**（Terraform 自身の state を Terraform で管理する「鶏と卵」問題を避けるため、ここだけは手動）
-
-**S3 バケット作成:**
-1. AWS コンソール → S3 → 「バケットを作成」
-2. バケット名: `test-app-terraform-state-{あなたのアカウントID}`（グローバルに一意）
-3. リージョン: `ap-northeast-1`（東京）
-4. 「バージョニング」: **有効**
-5. 「デフォルトの暗号化」: **SSE-S3 を有効**
-6. 「パブリックアクセスをすべてブロック」: **有効のまま**
-7. 「バケットを作成」
-
-**DynamoDB テーブル作成（同時実行防止用）:**
-1. AWS コンソール → DynamoDB → 「テーブルを作成」
-2. テーブル名: `test-app-terraform-lock`
-3. パーティションキー: `LockID`（文字列型）
-4. その他はデフォルトのまま → 「テーブルの作成」
-
-> 🧪 **確認:**
-> ```bash
-> aws s3 ls s3://test-app-terraform-state-{アカウントID}/ --region ap-northeast-1
-> # エラーなく空の結果が返ればOK
->
-> aws dynamodb describe-table --table-name test-app-terraform-lock --region ap-northeast-1 --query 'Table.TableStatus'
-> # "ACTIVE" が返ればOK
-> ```
-
----
-
 ## 第 0 部 — 全体の地図: なぜこれらすべてが必要なのか
 
 > **この部で分かること**: 本書で扱う技術スタック (IAM / Terraform / AWS サービス / GitHub Actions) が、CI/CD パイプラインという 1 本の目的にどう繋がるのか / 「手動デプロイ」がなぜ破綻するのか / 自動化の全体像。
@@ -764,8 +653,6 @@ sequenceDiagram
 
 #### AWS 側の OIDC プロバイダ設定（Terraform）
 
-> 📄 **書き込み先ファイル**: `infrastructure/modules/iam/main.tf`（新規作成）
-
 ```hcl
 # GitHub Actions の OIDC プロバイダを AWS に登録
 resource "aws_iam_openid_connect_provider" "github" {
@@ -1173,8 +1060,6 @@ Terraform は「前回 apply した結果」を **state ファイル** (`terrafo
 | ローカル | 手元の `terraform.tfstate` | チームメンバーと共有できない。紛失したら復旧困難 |
 | **リモート** | S3 + DynamoDB | チームで共有可能。**排他ロックで同時変更を防止** |
 
-> 📄 **書き込み先ファイル**: `infrastructure/environments/production/backend.tf`（新規作成）
-
 ```hcl
 # リモート state (推奨)
 terraform {
@@ -1221,10 +1106,8 @@ infrastructure/
 │       └── main.tf
 ```
 
-> 📄 **書き込み先ファイル**: `infrastructure/environments/production/main.tf`（新規作成）
-
 ```hcl
-# environments/production/main.tf
+# environments/prod/main.tf
 module "networking" {
   source      = "../../modules/vpc"
   project_name = "test-app"
@@ -1318,8 +1201,6 @@ flowchart LR
 | `.env` ファイル | **Secrets Manager / SSM** | 秘密値の管理 |
 
 ### 5.2 VPC の構築（Terraform）
-
-> 📄 **書き込み先ファイル**: `infrastructure/modules/vpc/main.tf`（新規作成）
 
 ```hcl
 # infrastructure/modules/vpc/main.tf
@@ -1454,8 +1335,6 @@ resource "aws_route_table_association" "private" {
 
 > 💡 **プロのナレッジ**: 「マネージドサービスを使えるなら使う」がクラウドの基本原則です。自分で管理するインフラは**負債**です。
 
-> 📄 **書き込み先ファイル**: `infrastructure/modules/rds/main.tf`（新規作成）
-
 ```hcl
 # infrastructure/modules/rds/main.tf
 
@@ -1527,8 +1406,6 @@ resource "aws_db_instance" "main" {
 
 ### 5.4 ECR（コンテナレジストリ）の構築
 
-> 📄 **書き込み先ファイル**: `infrastructure/modules/ecr/main.tf`（新規作成）
-
 ```hcl
 resource "aws_ecr_repository" "backend" {
   name                 = "${var.project_name}/backend"
@@ -1568,8 +1445,6 @@ resource "aws_ecr_lifecycle_policy" "backend" {
 | ライフサイクルポリシー | 古いイメージの蓄積によるストレージコストを抑える |
 
 ### 5.5 本番用 Dockerfile（マルチステージビルド）
-
-> 📄 **書き込み先ファイル**: `backend/Dockerfile.prod`（新規作成）
 
 ```dockerfile
 # backend/Dockerfile.prod
@@ -1634,8 +1509,6 @@ CMD ["python", "-m", "gunicorn", "app.main:app", \
 | **クラスタ** | コンテナの実行環境の「グループ」 | (最上位の入れ物) |
 | **サービス** | 「このコンテナを常時 N 個動かす」という定義 | docker-compose の `services:` |
 | **タスク定義** | コンテナの詳細設定（イメージ、CPU、メモリ、環境変数） | Dockerfile + docker-compose の設定 |
-
-> 📄 **書き込み先ファイル**: `infrastructure/modules/ecs/main.tf`（新規作成）
 
 ```hcl
 # infrastructure/modules/ecs/main.tf
@@ -1886,8 +1759,6 @@ resource "aws_appautoscaling_policy" "cpu" {
 | ECS でフロントも動かす | ~$30+ | 高（東京のみ） | 手動 |
 | **S3 + CloudFront** | **~$1-5** | **極低（世界中のエッジ）** | **無限** |
 
-> 📄 **書き込み先ファイル**: `infrastructure/modules/s3-cloudfront/main.tf`（新規作成）
-
 ```hcl
 # infrastructure/modules/s3-cloudfront/main.tf
 
@@ -1998,8 +1869,6 @@ resource "aws_cloudfront_distribution" "frontend" {
 - **ブラウザ警告**: HTTP サイトは「安全ではありません」と警告表示される
 - **Cookie**: `Secure` フラグ付き Cookie は HTTPS でのみ送信される
 
-> 📄 **書き込み先ファイル**: `infrastructure/modules/s3-cloudfront/main.tf`（追記）
-
 ```hcl
 # ACM 証明書（CloudFront 用: 必ず us-east-1）
 provider "aws" {
@@ -2041,8 +1910,6 @@ resource "aws_route53_record" "cert_validation" {
 > 💡 **なぜ CloudFront の証明書は us-east-1 でなければならないのか**: CloudFront はグローバルサービスであり、証明書の管理は `us-east-1` に集約されています。これは AWS のアーキテクチャ上の制約であり、よく見落とされるポイントです。
 
 ### 5.9 セキュリティグループ — 多層防御
-
-> 📄 **書き込み先ファイル**: `infrastructure/modules/ecs/main.tf`（追記、セキュリティグループ部分）
 
 ```hcl
 # ALB: インターネットから HTTPS のみ受け入れ
@@ -2268,8 +2135,6 @@ services:
 
 ### 6.10 再利用可能なワークフロー (Reusable Workflows)
 
-> 📄 **書き込み先ファイル**: `.github/workflows/reusable-docker-build.yml`（新規作成）
-
 ```yaml
 # .github/workflows/reusable-docker-build.yml (テンプレート側)
 on:
@@ -2289,8 +2154,6 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker build ${{ inputs.context }}
 ```
-
-> 📄 **書き込み先ファイル**: `.github/workflows/deploy.yml`（呼び出し側の例）
 
 ```yaml
 # .github/workflows/deploy.yml (呼び出し側)
@@ -2355,8 +2218,6 @@ flowchart TD
 ### 7.2 キャッシュ戦略 — CI を速くする
 
 CI が遅いと開発者はフィードバックを待てず、CI を無視するようになります。**CI は速くなければ意味がない**。
-
-> 📄 **書き込み先ファイル**: `.github/workflows/ci.yml`（以下 7.2〜7.4 のスニペットをこのファイルにまとめる）
 
 ```yaml
 - uses: actions/setup-python@v5
@@ -2472,8 +2333,6 @@ flowchart LR
 ```
 
 ### 8.2 完全な CD ワークフロー
-
-> 📄 **書き込み先ファイル**: `.github/workflows/deploy.yml`（新規作成）
 
 ```yaml
 # .github/workflows/deploy.yml
@@ -2745,59 +2604,6 @@ jobs:
 
 > 💡 **本番デプロイの承認フロー**: `environment: production` + `required_reviewers` を設定すると、GitHub UI 上で「承認」ボタンを押さないとデプロイが実行されません。
 
-#### 🖥️ GitHub Settings の GUI 設定手順
-
-以下の 3 つの設定を GitHub リポジトリの Web UI から行います。
-
-##### ① Secrets の登録
-
-1. GitHub でリポジトリページを開く
-2. **Settings** タブ → 左メニュー **Secrets and variables** → **Actions** をクリック
-3. **New repository secret** ボタンをクリック
-4. 以下の 2 つを登録する:
-
-| Name | Value | 説明 |
-|------|-------|------|
-| `AWS_DEPLOY_ROLE_ARN` | `arn:aws:iam::<AWSアカウントID>:role/test-app-github-actions` | Part 2 で作成した IAM ロールの ARN |
-| `CLOUDFRONT_DISTRIBUTION_ID` | `E1XXXXXXXXXX`（CloudFront コンソールで確認） | フロントエンドキャッシュ無効化に使用 |
-
-> ⚠️ **注意**: Secret の値は登録後に再表示できません。値を間違えた場合は **Update** で上書きしてください。
-
-##### ② Environments の作成と Protection Rules
-
-1. **Settings** タブ → 左メニュー **Environments** をクリック
-2. **New environment** をクリック → 名前に `production` と入力 → **Configure environment** をクリック
-3. **Environment protection rules** セクションで以下を設定:
-   - ✅ **Required reviewers** にチェック → 承認者（自分のアカウント）を追加
-   - ✅ **Wait timer** に `5`（分）を入力（任意）
-4. **Deployment branches and tags** セクションで:
-   - ドロップダウンから **Selected branches and tags** を選択
-   - **Add deployment branch or tag rule** をクリック
-   - `main` と入力して追加
-5. **Save protection rules** をクリック
-
-> 💡 これにより、`main` ブランチ以外からの本番デプロイが禁止され、デプロイ時に承認が必要になります。
-
-##### ③ Branch Protection Rules の設定
-
-1. **Settings** タブ → 左メニュー **Branches** をクリック
-2. **Add branch protection rule** をクリック
-3. **Branch name pattern** に `main` と入力
-4. 以下にチェックを入れる:
-   - ✅ **Require a pull request before merging**
-     - ✅ **Require approvals**: 1（最低 1 人のレビュー承認が必要）
-   - ✅ **Require status checks to pass before merging**
-     - 検索ボックスで以下の CI Job を追加:
-       - `backend-lint`
-       - `backend-test`
-       - `frontend-lint`
-       - `frontend-build`
-       - `compose-smoke`
-   - ✅ **Require branches to be up to date before merging**
-5. **Create** をクリック
-
-> 💡 これにより、CI が通らない PR は `main` にマージできなくなります。「CI がグリーンでないコードは本番に行かない」を仕組みで保証します。
-
 ### 8.5 ロールバック戦略
 
 ```bash
@@ -2909,8 +2715,6 @@ quadrantChart
 3. **エラー率**: 5xx レスポンスの割合
 4. **飽和度**: CPU/メモリの使用率。飽和するとレイテンシが急増する
 
-> 📄 **書き込み先ファイル**: `infrastructure/modules/monitoring/main.tf`（新規作成）
-
 ```hcl
 # 5xx エラー率アラーム
 resource "aws_cloudwatch_metric_alarm" "high_5xx" {
@@ -2953,8 +2757,6 @@ resource "aws_cloudwatch_metric_alarm" "high_cpu" {
 ```
 
 ### 9.4 WAF（Web Application Firewall）
-
-> 📄 **書き込み先ファイル**: `infrastructure/modules/waf/main.tf`（新規作成）
 
 ```hcl
 resource "aws_wafv2_web_acl" "main" {
