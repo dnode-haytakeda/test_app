@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import Field, SecretStr, computed_field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     # アプリケーション
     APP_ENV: Literal["development", "staging", "production"] = "development"
     LOG_LEVEL: str = "INFO"
-    CORS_ORIGINS: list[str] = ["http://localhost:5173"]
+    CORS_ORIGINS: list[str] = [" http://localhost:5173 "]
     TRUSTED_HOSTS: list[str] = []
 
     # データベース
@@ -40,7 +40,6 @@ class Settings(BaseSettings):
     DATABASE_MAX_OVERFLOW: int = 20
     DATABASE_POOL_TIMEOUT: int = 30
 
-    @computed_field
     @property
     def database_url(self) -> str:
         query_params: dict[str, str] = {}
@@ -59,5 +58,6 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.APP_ENV == "production"
+
 
 settings = Settings()

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterable
+    from collections.abc import AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,6 @@ class BaseService:
         self._logger = structlog.get_logger().bind(service=type(self).__name__)
 
     @asynccontextmanager
-    async def _transaction(self) -> AsyncIterable[None]:
+    async def _transaction(self) -> AsyncIterator[None]:
         async with self._session.begin_nested():
             yield

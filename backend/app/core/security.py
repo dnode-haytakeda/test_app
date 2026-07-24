@@ -18,11 +18,13 @@ ph = PasswordHasher()
 def hash_password(password: str) -> str:
     return ph.hash(password)
 
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     try:
         return ph.verify(hashed_password, plain_password)
     except (VerifyMismatchError, InvalidHashError, VerificationError):
         return False
+
 
 def check_needs_rehash(hashed_password: str) -> bool:
     return ph.check_needs_rehash(hashed_password)
@@ -31,12 +33,17 @@ def check_needs_rehash(hashed_password: str) -> bool:
 def _secret() -> str:
     return settings.SECRET_KEY.get_secret_value()
 
+
 def _encode_token(payload: dict[str, Any]) -> str:
-    return jwt.encode(payload, _secret(), algorithm=settings.JWT_ALGORITHM)
+    encoded = jwt.encode(payload, _secret(), algorithm=settings.JWT_ALGORITHM)
+    if isinstance(encoded, bytes):
+        return encoded.decode("utf-8")
+    return encoded
+
 
 def create_access_token(
-        subject: str,
-        extra_claims: dict[str, Any] | None = None,
+    subject: str,
+    extra_claims: dict[str, Any] | None = None,
 ) -> str:
     now = datetime.now(UTC)
     payload = {
@@ -50,6 +57,7 @@ def create_access_token(
     }
     return _encode_token(payload)
 
+
 def create_refresh_token(subject: str) -> str:
     now = datetime.now(UTC)
     payload = {
@@ -62,9 +70,10 @@ def create_refresh_token(subject: str) -> str:
     }
     return _encode_token(payload)
 
+
 def decode_token(
-        token: str,
-        expected_type: str = "access",
+    token: str,
+    expected_type: str = "access",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = jwt.decode(
         token,

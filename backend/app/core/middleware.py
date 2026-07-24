@@ -3,7 +3,8 @@ import uuid
 
 import structlog
 from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
 
 from app.core.config import settings
 
@@ -17,7 +18,11 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     なければ UUID v4 を自動生成する。
     """
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
         request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         structlog.contextvars.bind_contextvars(request_id=request_id)
         try:
@@ -37,7 +42,11 @@ class AccessLoggingMiddleware(BaseHTTPMiddleware):
 
     _SKIP_PATHS = frozenset({"/api/health/live", "/api/health", "/metrics"})
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
         if request.url.path in self._SKIP_PATHS:
             return await call_next(request)
 
@@ -60,7 +69,11 @@ class AccessLoggingMiddleware(BaseHTTPMiddleware):
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """セキュリティ関連のレスポンスヘッダーを全レスポンスに付与する。"""
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: RequestResponseEndpoint,
+    ) -> Response:
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
