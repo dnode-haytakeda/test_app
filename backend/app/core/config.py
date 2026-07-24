@@ -4,6 +4,7 @@ from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",

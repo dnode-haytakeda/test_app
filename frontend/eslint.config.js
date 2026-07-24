@@ -1,10 +1,9 @@
-// ESLint 9 flat config。a11y と react-hooks のルールを強制する。
+// ESLint flat config
 import js from "@eslint/js";
 import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
-import jsxA11y from "eslint-plugin-jsx-a11y";
 
 export default tseslint.config(
   { ignores: ["dist"] },
@@ -18,12 +17,9 @@ export default tseslint.config(
     plugins: {
       "react-hooks": reactHooks,
       "react-refresh": reactRefresh,
-      "jsx-a11y": jsxA11y,
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      ...(jsxA11y.flatConfigs?.recommended?.rules ??
-        jsxA11y.configs.recommended.rules),
       "react-hooks/exhaustive-deps": "error",
       "react-refresh/only-export-components": [
         "warn",

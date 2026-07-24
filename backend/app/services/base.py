@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterable
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 import structlog
-from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterable
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class BaseService:

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import jwt
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, UnauthorizedError
 from app.core.security import (
@@ -15,11 +15,15 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.modules.auth.repository import RefreshTokenDenylistRepository
-from app.modules.auth.schemas import LoginRequest, RegisterRequest
 from app.modules.users.model import User
-from app.modules.users.repository import UserRepository
 from app.services import BaseService
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.modules.auth.repository import RefreshTokenDenylistRepository
+    from app.modules.auth.schemas import LoginRequest, RegisterRequest
+    from app.modules.users.repository import UserRepository
 
 
 class AuthService(BaseService):

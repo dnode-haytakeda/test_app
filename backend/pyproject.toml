@@ -21,6 +21,10 @@ select = [
     "TCH", # flake8-type-checking
     "RUF", # ruff-specific
 ]
+ignore = [
+    "RUF002", # ambiguous characters in docstrings (Japanese)
+    "RUF003", # ambiguous characters in comments (Japanese)
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]

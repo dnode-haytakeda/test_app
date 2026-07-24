@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import uuid
-from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+
+if TYPE_CHECKING:
+    import uuid
+    from datetime import datetime
 
 
 class RevokedRefreshToken(Base):

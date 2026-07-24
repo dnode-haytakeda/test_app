@@ -1,5 +1,6 @@
 from enum import StrEnum
 
+
 class ErrorCode(StrEnum):
     """API レスポンスで返されるアプリケーションエラーコード。"""
 

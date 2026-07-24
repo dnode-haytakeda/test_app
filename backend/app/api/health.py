@@ -1,5 +1,5 @@
 import structlog
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter
 from sqlalchemy import text
 
 from app.core.database import engine

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from fastapi import Response
+from typing import TYPE_CHECKING
 
 from app.core.config import settings
+
+if TYPE_CHECKING:
+    from fastapi import Response
 
 REFRESH_COOKIE_NAME = "refresh_token"
 REFRESH_COOKIE_PATH = "/api/auth"

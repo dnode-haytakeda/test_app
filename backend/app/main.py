@@ -67,7 +67,8 @@ app.add_middleware(
 # (2) GZip — レスポンス圧縮（1KB 以上のレスポンスを自動圧縮）
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# (3) アクセスログ — 全リクエストの構造化ログ（RequestID の内側で実行されるため request_id が利用可能）
+# (3) アクセスログ — 全リクエストの構造化ログ
+# RequestID の内側で実行されるため request_id が利用可能
 app.add_middleware(AccessLoggingMiddleware)
 
 # (4) Request ID — リクエスト追跡用の一意 ID を生成・伝搬

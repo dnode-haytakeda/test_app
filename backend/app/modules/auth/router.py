@@ -3,7 +3,9 @@ from fastapi import APIRouter, Cookie, Depends, Request, Response, status
 from app.core.errors import UnauthorizedError
 from app.core.rate_limit import auth_rate_limiter
 from app.modules.auth.cookies import (
-    REFRESH_COOKIE_NAME, clear_refresh_cookie, set_refresh_cookie,
+    REFRESH_COOKIE_NAME,
+    clear_refresh_cookie,
+    set_refresh_cookie,
 )
 from app.modules.auth.dependencies import AuthServiceDep, CurrentUserDep
 from app.modules.auth.schemas import AccessTokenResponse, LoginRequest, RegisterRequest
