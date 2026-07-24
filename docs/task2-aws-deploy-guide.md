@@ -6,6 +6,43 @@
 
 ---
 
+## ⚠️ 最重要: デプロイの 2 段階を理解する（まずここを読む）
+
+> **本書を読む前に、この区別を頭に入れてください。** これを理解していないと、以降の内容が全て混乱します。
+
+### git push するだけではデプロイされません
+
+AWS デプロイは **2 つの独立した工程** で構成されます:
+
+| | 第 1 段階: インフラ構築 | 第 2 段階: アプリデプロイ |
+|---|---|---|
+| **何をする** | VPC, ECS, RDS, S3 等の AWS リソースを作成する | Docker イメージの push、ECS サービス更新、フロントエンド配置 |
+| **実行者** | **あなた（手動）** | GitHub Actions（自動） |
+| **実行場所** | **ローカル PC のターミナル** | GitHub のサーバー |
+| **実行コマンド** | `terraform apply` | （git push で自動起動） |
+| **頻度** | 初回 1 回 + インフラ変更時のみ | main ブランチへの push のごと |
+| **該当ファイル** | `infrastructure/` 以下の `.tf` ファイル | `.github/workflows/deploy.yml` |
+
+![task2-aws-deploy-guide-1](images/task2-aws-deploy-guide-1.svg)
+
+### よくある誤解
+
+| 誤解 | 正解 |
+|------|------|
+| 「deploy.yml が Terraform を実行してくれる」 | **No.** deploy.yml に terraform コマンドは書かれていません。意図的な設計です |
+| 「git push すれば全自動でインフラもアプリも作られる」 | **No.** インフラは事前に手動で構築する必要があります |
+| 「Terraform コード内にログイン情報が必要」 | **No.** `aws configure` で設定済みの認証情報を自動で読み取ります |
+
+### 認証の仕組み
+
+- **Terraform (第 1 段階)**: `aws configure` で `~/.aws/credentials` に保存された Access Key を自動的に使用
+- **GitHub Actions (第 2 段階)**: OIDC (パスワード不要の信頼関係) で AWS に認証
+
+> **詳細**: [task3-deploy-explainer.md](./task3-deploy-explainer.md) にシーケンス図付きで解説  
+> **実行手順**: [task3-additional-setup-steps.md](./task3-additional-setup-steps.md) に全チェックリストを掲載
+
+---
+
 ## 目次
 
 - [🗺️ 実行計画 — 作成するファイル一覧とディレクトリ構成](#️-実行計画--作成するファイル一覧とディレクトリ構成) ← **まずここを読む**
@@ -155,19 +192,7 @@ test_app/                              ← プロジェクトルート (既存)
 
 ### 実行の順序（フローチャート）
 
-```mermaid
-flowchart TD
-    A["Phase 1: Dockerfile.prod 作成"] --> B["Phase 2: Terraform モジュール作成"]
-    B --> C["Phase 3: environments/production/ 作成"]
-    C --> D["terraform init → plan → apply"]
-    D --> E["Phase 4: .github/workflows/ 作成"]
-    E --> F["Phase 5: GitHub Settings 設定"]
-    F --> G["git push → CI/CD が自動実行 🎉"]
-
-    style A fill:#e3f2fd,stroke:#1565c0
-    style D fill:#fff3e0,stroke:#e65100
-    style G fill:#e8f5e9,stroke:#2e7d32
-```
+![task2-aws-deploy-guide-2](images/task2-aws-deploy-guide-2.svg)
 
 ### 各ファイルに書く内容の早見表
 
@@ -349,47 +374,11 @@ terraform --version
 
 CI と CD は独立した概念ではなく、**1 つのパイプライン (流れ作業)** の前半と後半です:
 
-```mermaid
-flowchart LR
-    Push["🔨 Push"] --> Lint["Lint"]
-    Lint --> Test["Test"]
-    Test --> Build["Build"]
-    Build --> PushImg["Push Image"]
-    PushImg --> Migrate["Migrate"]
-    Migrate --> Deploy["Deploy"]
-    Deploy --> HC["Health Check"]
-
-    subgraph CI ["CI — 品質保証"]
-        Lint
-        Test
-        Build
-    end
-
-    subgraph CD ["CD — 自動デプロイ"]
-        PushImg
-        Migrate
-        Deploy
-        HC
-    end
-
-    style CI fill:#e3f2fd,stroke:#1976d2
-    style CD fill:#e8f5e9,stroke:#388e3c
-```
+![task2-aws-deploy-guide-3](images/task2-aws-deploy-guide-3.svg)
 
 ### 0.3 本書の技術スタックが CI/CD にどう繋がるか
 
-```mermaid
-flowchart TB
-    GHA["GitHub Actions<br/>オーケストレータ"] -->|認証| IAM["IAM + OIDC<br/>認証・認可"]
-    IAM -->|権限付与| AWS["AWS サービス群<br/>ECS / RDS / S3"]
-    TF["Terraform<br/>IaC"] -->|リソース定義| AWS
-    GHA -->|CI/CD 実行| AWS
-
-    style GHA fill:#f3e5f5,stroke:#7b1fa2
-    style IAM fill:#fff3e0,stroke:#e65100
-    style AWS fill:#e3f2fd,stroke:#1565c0
-    style TF fill:#e8f5e9,stroke:#2e7d32
-```
+![task2-aws-deploy-guide-4](images/task2-aws-deploy-guide-4.svg)
 
 | 技術 | CI/CD パイプラインでの役割 |
 |------|--------------------------|
@@ -678,26 +667,7 @@ AWS にはサーバ (EC2)、データベース (RDS)、コンテナ実行環境 
 
 ### 2.3 三者の関係を整理する
 
-```mermaid
-flowchart LR
-    subgraph 人間
-        User["IAM ユーザー<br/>👤 alice"]
-    end
-
-    subgraph プログラム
-        Role["IAM ロール<br/>🎭 github-actions-deploy"]
-    end
-
-    Policy1["📋 IAM ポリシー<br/>ECR Push 許可"] -->|アタッチ| Role
-    Policy2["📋 IAM ポリシー<br/>ECS 更新許可"] -->|アタッチ| Role
-    Policy3["📋 IAM ポリシー<br/>ReadOnly"] -->|アタッチ| User
-
-    Role -->|一時トークン<br/>1時間で失効| AWS["AWS リソース"]
-    User -->|長期キー<br/>+ MFA| AWS
-
-    style 人間 fill:#fff3e0,stroke:#e65100
-    style プログラム fill:#e8f5e9,stroke:#2e7d32
-```
+![task2-aws-deploy-guide-5](images/task2-aws-deploy-guide-5.svg)
 
 | 何を | どう使い分ける |
 |------|---------------|
@@ -741,21 +711,7 @@ steps:
 
 仕組み:
 
-```mermaid
-sequenceDiagram
-    participant GH as GitHub Actions
-    participant GHOIDC as GitHub OIDC Provider
-    participant STS as AWS STS
-    participant AWS as AWS サービス
-
-    GH->>GHOIDC: ① OIDC トークン発行要求
-    GHOIDC-->>GH: JWT トークン（repo, branch 情報入り）
-    GH->>STS: ② AssumeRoleWithWebIdentity
-    Note over STS: 信頼ポリシーを検証<br/>repo名・branch を確認
-    STS-->>GH: ③ 一時的な認証情報（1h有効）
-    GH->>AWS: ④ ECR Push / ECS Update
-    AWS-->>GH: 成功
-```
+![task2-aws-deploy-guide-6](images/task2-aws-deploy-guide-6.svg)
 
 メリット:
 - **長期的な鍵が存在しない** → 漏洩しようがない
@@ -902,19 +858,7 @@ IAM ロールには 2 種類のポリシーがあります:
 
 3 大クラウドすべてで、**「長期的な認証情報を使わない」** 方向に進んでいます。
 
-```mermaid
-flowchart LR
-    subgraph 旧来["❌ 旧来の方法"]
-        Key["長期キー"] -->|漏洩リスク| Danger["☠️ 不正アクセス"]
-    end
-
-    subgraph 現代["✅ 現代の方法"]
-        OIDC["OIDC トークン"] -->|一時的| Temp["✅ 1h で失効"]
-    end
-
-    style 旧来 fill:#ffebee,stroke:#c62828
-    style 現代 fill:#e8f5e9,stroke:#2e7d32
-```
+![task2-aws-deploy-guide-7](images/task2-aws-deploy-guide-7.svg)
 
 | クラウド | 長期鍵 → 無鍵化の仕組み |
 |---------|-------------------------|
@@ -1116,17 +1060,7 @@ output "ecr_repository_url" {
 
 ### 4.4 Terraform のワークフロー
 
-```mermaid
-flowchart LR
-    Init["terraform init<br/>📦 Provider DL"] --> Plan["terraform plan<br/>🔍 差分表示"]
-    Plan --> Review["👁️ レビュー<br/>PR で確認"]
-    Review --> Apply["terraform apply<br/>✅ 実際に適用"]
-
-    style Init fill:#e3f2fd,stroke:#1976d2
-    style Plan fill:#fff3e0,stroke:#e65100
-    style Review fill:#fce4ec,stroke:#c62828
-    style Apply fill:#e8f5e9,stroke:#2e7d32
-```
+![task2-aws-deploy-guide-8](images/task2-aws-deploy-guide-8.svg)
 
 #### `terraform init` — 最初に必ず 1 回
 
@@ -1286,27 +1220,7 @@ module "ecs" {
 
 ### 5.1 Docker Compose → AWS へのマッピング
 
-```mermaid
-flowchart LR
-    subgraph Docker["Docker Compose (ローカル)"]
-        B["backend<br/>FastAPI"]
-        F["frontend<br/>React"]
-        D["db<br/>PostgreSQL"]
-    end
-
-    subgraph AWS["AWS (クラウド)"]
-        ECS["ECS Fargate"]
-        S3["S3 + CloudFront"]
-        RDS["RDS PostgreSQL"]
-    end
-
-    B --> ECS
-    F --> S3
-    D --> RDS
-
-    style Docker fill:#e3f2fd,stroke:#1976d2
-    style AWS fill:#fff3e0,stroke:#e65100
-```
+![task2-aws-deploy-guide-9](images/task2-aws-deploy-guide-9.svg)
 
 | Docker Compose | AWS サービス | 役割 |
 |----------------|-------------|------|
@@ -1825,20 +1739,7 @@ resource "aws_ecs_service" "backend" {
 
 #### ローリングアップデート
 
-```mermaid
-gantt
-    title Rolling Update の流れ
-    dateFormat X
-    axisFormat %s
-
-    section v1 タスク
-    タスク 1 (稼働)      :done, t1, 0, 3
-    タスク 2 (稼働)      :done, t2, 0, 4
-
-    section v2 タスク
-    タスク 1 (起動→HC通過) :active, t3, 1, 5
-    タスク 2 (起動→HC通過) :active, t4, 2, 5
-```
+![task2-aws-deploy-guide-10](images/task2-aws-deploy-guide-10.svg)
 
 ```
 デプロイ前:  [v1] [v1]                    ← 2 タスク稼働中
@@ -2094,17 +1995,7 @@ resource "aws_security_group" "rds" {
 
 > 💡 **多層防御**: ALB → ECS → RDS の各段で、前段からのトラフィックのみを許可。本アプリの `app/core/middleware.py` でミドルウェアスタックを積み重ねているのと同じ「多層で防御する」設計です。
 
-```mermaid
-flowchart LR
-    Internet["🌐 インターネット"] -->|"HTTPS (443)"| ALB["ALB<br/>ロードバランサ"]
-    ALB -->|"HTTP (8000)"| ECS["ECS Fargate<br/>バックエンド"]
-    ECS -->|"TCP (5432)"| RDS["RDS<br/>PostgreSQL"]
-
-    style Internet fill:#ffebee,stroke:#c62828
-    style ALB fill:#fff3e0,stroke:#e65100
-    style ECS fill:#e3f2fd,stroke:#1565c0
-    style RDS fill:#e8f5e9,stroke:#2e7d32
-```
+![task2-aws-deploy-guide-11](images/task2-aws-deploy-guide-11.svg)
 
 ### 理解度チェック (第 5 部)
 
@@ -2336,19 +2227,7 @@ jobs:
 
 ### 7.1 CI パイプラインの全体像
 
-```mermaid
-flowchart TD
-    Push["push / PR"] --> BL["backend-lint<br/>ruff + mypy"]
-    Push --> BT["backend-test<br/>pytest + DB"]
-    Push --> FL["frontend-lint<br/>eslint + tsc"]
-    Push --> FB["frontend-build<br/>npm run build"]
-
-    BT --> CS["compose-smoke<br/>docker compose + ヘルスチェック"]
-    FB --> CS
-
-    style Push fill:#f3e5f5,stroke:#7b1fa2
-    style CS fill:#e8f5e9,stroke:#2e7d32
-```
+![task2-aws-deploy-guide-12](images/task2-aws-deploy-guide-12.svg)
 
 > 💡 **設計の意図**: lint / test / build は**互いに独立なので並列実行**。compose-smoke は「全 Job が成功したら実行」— **`needs` で依存を明示**。
 
@@ -2459,17 +2338,7 @@ compose-smoke:
 
 ### 8.1 CD パイプラインの 6 ステップ
 
-```mermaid
-flowchart LR
-    CI["✅ CI 通過"] --> Auth["🔐 AWS 認証<br/>OIDC"]
-    Auth --> ECR["📦 ECR Push<br/>Docker イメージ"]
-    ECR --> Migrate["🗃️ DB Migration<br/>Alembic"]
-    Migrate --> Deploy["🚀 ECS 更新<br/>Rolling Update"]
-    Deploy --> HC["💡 Health Check<br/>安定化待ち"]
-
-    style CI fill:#e8f5e9,stroke:#388e3c
-    style HC fill:#e3f2fd,stroke:#1976d2
-```
+![task2-aws-deploy-guide-13](images/task2-aws-deploy-guide-13.svg)
 
 ### 8.2 完全な CD ワークフロー
 
@@ -2830,27 +2699,7 @@ aws ecs update-service \
 
 > **この部で分かること**: CI/CD パイプライン全体のセキュリティ設計 / Branch Protection / 監視とアラート / WAF / コスト最適化 / 次に学ぶべきこと。
 
-```mermaid
-flowchart TD
-    subgraph "🔒 セキュリティ多層防御"
-        WAF["🛡️ WAF<br/>リクエストフィルタリング"] --> CF["🌐 CloudFront<br/>HTTPS 強制"]
-        CF --> ALB["⚖️ ALB<br/>SG: 443 のみ"]
-        ALB --> ECS["📦 ECS Fargate<br/>プライベートサブネット"]
-        ECS --> RDS["🗃️ RDS<br/>暗号化 + 非公開"]
-    end
-
-    subgraph "👁️ 監視"
-        CW["📊 CloudWatch<br/>Metrics/Logs/Alarms"]
-        SNS["📧 SNS<br/>アラート通知"]
-        CT["📝 CloudTrail<br/>API 監査ログ"]
-    end
-
-    ECS --> CW
-    CW --> SNS
-
-    style WAF fill:#ffebee,stroke:#c62828
-    style RDS fill:#e8f5e9,stroke:#2e7d32
-```
+![task2-aws-deploy-guide-14](images/task2-aws-deploy-guide-14.svg)
 
 ### 9.1 Branch Protection Rules — main を守る城壁
 
@@ -2893,16 +2742,7 @@ flowchart TD
 
 Google の SRE チームが提唱する、サービス監視の 4 つの指標：
 
-```mermaid
-quadrantChart
-    title ゴールデンシグナル
-    x-axis "ユーザー影響: 低" --> "ユーザー影響: 高"
-    y-axis "検知難易度: 容易" --> "検知難易度: 困難"
-    "エラー率": [0.8, 0.3]
-    "レイテンシ": [0.7, 0.6]
-    "トラフィック": [0.3, 0.2]
-    "飽和度": [0.4, 0.8]
-```
+![task2-aws-deploy-guide-15](images/task2-aws-deploy-guide-15.svg)
 
 1. **レイテンシ**: リクエストの応答時間。P50, P95, P99 で測定
 2. **トラフィック**: リクエスト数/秒。正常な負荷を知ることで異常を検知
@@ -3060,19 +2900,7 @@ resource "aws_wafv2_web_acl" "main" {
 
 初日からすべてを完璧にする必要はありません。段階的に進めましょう：
 
-```mermaid
-flowchart LR
-    P1["👣 Phase 1<br/>手動デプロイ"] --> P2["📝 Phase 2<br/>Terraform 化"]
-    P2 --> P3["⚙️ Phase 3<br/>CI/CD 構築"]
-    P3 --> P4["📈 Phase 4<br/>監視・アラート"]
-    P4 --> P5["🔒 Phase 5<br/>セキュリティ強化"]
-
-    style P1 fill:#e3f2fd,stroke:#1565c0
-    style P2 fill:#e8f5e9,stroke:#2e7d32
-    style P3 fill:#fff3e0,stroke:#e65100
-    style P4 fill:#fce4ec,stroke:#c62828
-    style P5 fill:#f3e5f5,stroke:#7b1fa2
-```
+![task2-aws-deploy-guide-16](images/task2-aws-deploy-guide-16.svg)
 
 ```
 Phase 1: 手動デプロイ
@@ -3095,28 +2923,7 @@ Phase 5: セキュリティ強化
 
 クラウドネイティブアプリケーション設計の12原則：
 
-```mermaid
-mindmap
-  root((Twelve-Factor))
-    コードベース
-      1つのリポジトリ
-      複数環境にデプロイ
-    依存関係
-      requirements.txt
-      package.json
-    設定
-      環境変数で注入
-    バックエンドサービス
-      DB/キャッシュをリソースとして扱う
-    ビルド・リリース・実行
-      厳密に分離
-    プロセス
-      ステートレス設計
-    並行性
-      ECS タスク数でスケール
-    ログ
-      stdout → CloudWatch
-```
+![task2-aws-deploy-guide-17](images/task2-aws-deploy-guide-17.svg)
 
 1. **コードベース**: 1つのコードベースで複数環境にデプロイ
 2. **依存関係**: 依存を明示的に宣言（requirements.txt, package.json）

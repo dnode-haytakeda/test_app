@@ -1,0 +1,241 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 880" font-family="Helvetica Neue, Arial, sans-serif" font-size="11">
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#333"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#1565C0"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#EF6C00"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#C62828"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#4527A0"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="880" fill="white"/>
+
+  <!-- Title -->
+  <text x="640" y="28" text-anchor="middle" font-size="16" font-weight="bold" fill="#232F3E">AWS Architecture — test-app (ap-northeast-1 Tokyo)</text>
+
+  <!-- AWS Cloud boundary -->
+  <rect x="140" y="42" width="1120" height="790" rx="8" fill="#F8F9FA" stroke="#232F3E" stroke-width="2"/>
+  <text x="160" y="62" font-size="12" font-weight="bold" fill="#232F3E">☁️ AWS Cloud</text>
+
+  <!-- ===== VPC Boundary ===== -->
+  <rect x="170" y="120" width="820" height="690" rx="6" fill="#E3F2FD" stroke="#0D47A1" stroke-width="3"/>
+  <text x="190" y="142" font-size="13" font-weight="bold" fill="#0D47A1">🔒 VPC — 10.0.0.0/16</text>
+
+  <!-- ===== AZ-a (top) ===== -->
+  <rect x="190" y="155" width="780" height="310" rx="4" fill="none" stroke="#616161" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="210" y="175" font-size="11" font-weight="bold" fill="#424242">Availability Zone: ap-northeast-1a</text>
+
+  <!-- Public Subnet AZ-a -->
+  <rect x="210" y="185" width="200" height="260" rx="4" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
+  <text x="220" y="205" font-size="10" font-weight="bold" fill="#1B5E20">🟢 Public Subnet</text>
+  <text x="220" y="220" font-size="9" fill="#2E7D32">10.0.1.0/24</text>
+  <!-- ALB -->
+  <rect x="240" y="250" width="140" height="80" rx="4" fill="#C8E6C9" stroke="#2E7D32" stroke-width="1.5"/>
+  <text x="310" y="275" text-anchor="middle" font-size="11" font-weight="bold" fill="#1B5E20">⚖️ ALB</text>
+  <text x="310" y="292" text-anchor="middle" font-size="9" fill="#2E7D32">Internet-facing</text>
+  <text x="310" y="306" text-anchor="middle" font-size="9" fill="#2E7D32">HTTPS 終端</text>
+  <text x="310" y="320" text-anchor="middle" font-size="8" fill="#666">SG: 443 ← 0.0.0.0/0</text>
+
+  <!-- Private Subnet AZ-a -->
+  <rect x="430" y="185" width="260" height="260" rx="4" fill="#FFF8E1" stroke="#EF6C00" stroke-width="1.5"/>
+  <text x="440" y="205" font-size="10" font-weight="bold" fill="#E65100">🟡 Private Subnet</text>
+  <text x="440" y="220" font-size="9" fill="#EF6C00">10.0.10.0/24</text>
+  <!-- ECS Fargate -->
+  <rect x="450" y="245" width="140" height="85" rx="4" fill="#FFECB3" stroke="#EF6C00" stroke-width="1.5"/>
+  <text x="520" y="270" text-anchor="middle" font-size="11" font-weight="bold" fill="#E65100">📦 ECS Fargate</text>
+  <text x="520" y="287" text-anchor="middle" font-size="9" fill="#EF6C00">0.25 vCPU / 512 MB</text>
+  <text x="520" y="301" text-anchor="middle" font-size="9" fill="#EF6C00">Port 8000</text>
+  <text x="520" y="318" text-anchor="middle" font-size="8" fill="#666">SG: 8000 ← ALB-SG</text>
+  <!-- VPC Endpoints -->
+  <rect x="450" y="345" width="140" height="75" rx="4" fill="#FFF3E0" stroke="#E65100" stroke-width="1"/>
+  <text x="520" y="367" text-anchor="middle" font-size="10" font-weight="bold" fill="#E65100">🔗 VPC Endpoints</text>
+  <text x="520" y="383" text-anchor="middle" font-size="8" fill="#795548">ecr.api / ecr.dkr</text>
+  <text x="520" y="396" text-anchor="middle" font-size="8" fill="#795548">logs / sm / s3(gw)</text>
+  <text x="520" y="409" text-anchor="middle" font-size="8" fill="#795548">PrivateLink</text>
+
+  <!-- Database Subnet AZ-a -->
+  <rect x="710" y="185" width="240" height="260" rx="4" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
+  <text x="720" y="205" font-size="10" font-weight="bold" fill="#B71C1C">🔴 Database Subnet</text>
+  <text x="720" y="220" font-size="9" fill="#C62828">10.0.20.0/24</text>
+  <!-- RDS Primary -->
+  <rect x="740" y="250" width="180" height="90" rx="4" fill="#FFCDD2" stroke="#C62828" stroke-width="1.5"/>
+  <text x="830" y="277" text-anchor="middle" font-size="11" font-weight="bold" fill="#B71C1C">🗃️ RDS PostgreSQL 16</text>
+  <text x="830" y="295" text-anchor="middle" font-size="10" fill="#C62828">Primary</text>
+  <text x="830" y="311" text-anchor="middle" font-size="9" fill="#C62828">Encrypted / Backup 7d</text>
+  <text x="830" y="328" text-anchor="middle" font-size="8" fill="#666">SG: 5432 ← ECS-SG</text>
+
+  <!-- ===== AZ-c (bottom) ===== -->
+  <rect x="190" y="480" width="780" height="310" rx="4" fill="none" stroke="#616161" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="210" y="500" font-size="11" font-weight="bold" fill="#424242">Availability Zone: ap-northeast-1c</text>
+
+  <!-- Public Subnet AZ-c -->
+  <rect x="210" y="510" width="200" height="260" rx="4" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
+  <text x="220" y="530" font-size="10" font-weight="bold" fill="#1B5E20">🟢 Public Subnet</text>
+  <text x="220" y="545" font-size="9" fill="#2E7D32">10.0.2.0/24</text>
+  <!-- ALB Node -->
+  <rect x="240" y="570" width="140" height="70" rx="4" fill="#C8E6C9" stroke="#2E7D32" stroke-width="1.5"/>
+  <text x="310" y="595" text-anchor="middle" font-size="11" font-weight="bold" fill="#1B5E20">⚖️ ALB</text>
+  <text x="310" y="612" text-anchor="middle" font-size="9" fill="#2E7D32">Node</text>
+  <text x="310" y="628" text-anchor="middle" font-size="8" fill="#666">SG: 443 ← 0.0.0.0/0</text>
+
+  <!-- Private Subnet AZ-c -->
+  <rect x="430" y="510" width="260" height="260" rx="4" fill="#FFF8E1" stroke="#EF6C00" stroke-width="1.5"/>
+  <text x="440" y="530" font-size="10" font-weight="bold" fill="#E65100">🟡 Private Subnet</text>
+  <text x="440" y="545" font-size="9" fill="#EF6C00">10.0.11.0/24</text>
+  <!-- ECS Fargate c -->
+  <rect x="450" y="570" width="140" height="75" rx="4" fill="#FFECB3" stroke="#EF6C00" stroke-width="1.5"/>
+  <text x="520" y="595" text-anchor="middle" font-size="11" font-weight="bold" fill="#E65100">📦 ECS Fargate</text>
+  <text x="520" y="612" text-anchor="middle" font-size="9" fill="#EF6C00">Port 8000</text>
+  <text x="520" y="628" text-anchor="middle" font-size="8" fill="#666">SG: 8000 ← ALB-SG</text>
+
+  <!-- Database Subnet AZ-c -->
+  <rect x="710" y="510" width="240" height="260" rx="4" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
+  <text x="720" y="530" font-size="10" font-weight="bold" fill="#B71C1C">🔴 Database Subnet</text>
+  <text x="720" y="545" font-size="9" fill="#C62828">10.0.21.0/24</text>
+  <!-- RDS Standby -->
+  <rect x="740" y="575" width="180" height="70" rx="4" fill="#FFCDD2" stroke="#C62828" stroke-width="1.5"/>
+  <text x="830" y="600" text-anchor="middle" font-size="11" font-weight="bold" fill="#B71C1C">🗃️ RDS PostgreSQL 16</text>
+  <text x="830" y="618" text-anchor="middle" font-size="10" fill="#C62828">Standby</text>
+  <text x="830" y="634" text-anchor="middle" font-size="8" fill="#666">SG: 5432 ← ECS-SG</text>
+
+  <!-- ===== External Services (Right Panel) ===== -->
+  <!-- CloudFront -->
+  <rect x="1020" y="80" width="150" height="70" rx="4" fill="#EDE7F6" stroke="#7B1FA2" stroke-width="1.5"/>
+  <text x="1095" y="105" text-anchor="middle" font-size="11" font-weight="bold" fill="#4A148C">☁️ CloudFront</text>
+  <text x="1095" y="122" text-anchor="middle" font-size="9" fill="#7B1FA2">CDN / TLS 1.2+</text>
+  <text x="1095" y="138" text-anchor="middle" font-size="9" fill="#7B1FA2">OAC</text>
+
+  <!-- S3 -->
+  <rect x="1020" y="170" width="150" height="65" rx="4" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1.5"/>
+  <text x="1095" y="195" text-anchor="middle" font-size="11" font-weight="bold" fill="#1B5E20">📦 S3</text>
+  <text x="1095" y="212" text-anchor="middle" font-size="9" fill="#2E7D32">Frontend SPA</text>
+  <text x="1095" y="226" text-anchor="middle" font-size="9" fill="#2E7D32">静的ホスティング</text>
+
+  <!-- ECR -->
+  <rect x="1020" y="260" width="150" height="65" rx="4" fill="#FFF3E0" stroke="#E65100" stroke-width="1.5"/>
+  <text x="1095" y="285" text-anchor="middle" font-size="11" font-weight="bold" fill="#E65100">🐳 ECR</text>
+  <text x="1095" y="302" text-anchor="middle" font-size="9" fill="#E65100">Container Registry</text>
+  <text x="1095" y="316" text-anchor="middle" font-size="9" fill="#E65100">Immutable Tags</text>
+
+  <!-- Secrets Manager -->
+  <rect x="1020" y="350" width="150" height="60" rx="4" fill="#FCE4EC" stroke="#C62828" stroke-width="1.5"/>
+  <text x="1095" y="372" text-anchor="middle" font-size="11" font-weight="bold" fill="#B71C1C">🔐 Secrets Mgr</text>
+  <text x="1095" y="389" text-anchor="middle" font-size="9" fill="#C62828">DB Pass / JWT</text>
+  <text x="1095" y="403" text-anchor="middle" font-size="8" fill="#C62828">自動ローテーション</text>
+
+  <!-- CloudWatch -->
+  <rect x="1020" y="435" width="150" height="55" rx="4" fill="#E8EAF6" stroke="#283593" stroke-width="1.5"/>
+  <text x="1095" y="457" text-anchor="middle" font-size="11" font-weight="bold" fill="#1A237E">📊 CloudWatch</text>
+  <text x="1095" y="474" text-anchor="middle" font-size="9" fill="#283593">Logs / Metrics / Alarms</text>
+
+  <!-- IAM -->
+  <rect x="1020" y="515" width="150" height="55" rx="4" fill="#E8EAF6" stroke="#283593" stroke-width="1.5"/>
+  <text x="1095" y="537" text-anchor="middle" font-size="11" font-weight="bold" fill="#1A237E">🔑 IAM</text>
+  <text x="1095" y="554" text-anchor="middle" font-size="9" fill="#283593">OIDC Provider</text>
+
+  <!-- ===== External Actors (Left) ===== -->
+  <!-- Users -->
+  <rect x="20" y="340" width="100" height="60" rx="20" fill="#E3F2FD" stroke="#1565C0" stroke-width="2"/>
+  <text x="70" y="365" text-anchor="middle" font-size="11" font-weight="bold" fill="#0D47A1">👤 Users</text>
+  <text x="70" y="382" text-anchor="middle" font-size="9" fill="#1565C0">Browser</text>
+
+  <!-- GitHub Actions -->
+  <rect x="20" y="680" width="100" height="65" rx="20" fill="#F3E5F5" stroke="#4527A0" stroke-width="2"/>
+  <text x="70" y="702" text-anchor="middle" font-size="10" font-weight="bold" fill="#4A148C">⚙️ GitHub</text>
+  <text x="70" y="717" text-anchor="middle" font-size="10" font-weight="bold" fill="#4A148C">Actions</text>
+  <text x="70" y="733" text-anchor="middle" font-size="8" fill="#7B1FA2">CI/CD (OIDC)</text>
+
+  <!-- Internet Gateway -->
+  <rect x="160" y="72" width="60" height="40" rx="4" fill="#E3F2FD" stroke="#1565C0" stroke-width="1.5"/>
+  <text x="190" y="92" text-anchor="middle" font-size="8" font-weight="bold" fill="#0D47A1">🚪 IGW</text>
+  <text x="190" y="106" text-anchor="middle" font-size="7" fill="#1565C0">Internet GW</text>
+
+  <!-- ===== CONNECTION ARROWS ===== -->
+
+  <!-- Users → CloudFront (Frontend path) -->
+  <path d="M120,355 L1020,115" fill="none" stroke="#7B1FA2" stroke-width="1.8" marker-end="url(#arrow-purple)"/>
+  <rect x="500" y="218" width="90" height="16" rx="3" fill="white" fill-opacity="0.9"/>
+  <text x="545" y="230" text-anchor="middle" font-size="9" fill="#7B1FA2" font-weight="bold">HTTPS 443</text>
+
+  <!-- CloudFront → S3 -->
+  <path d="M1095,150 L1095,170" fill="none" stroke="#7B1FA2" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
+
+  <!-- Users → IGW (Backend path) -->
+  <path d="M120,350 L160,92" fill="none" stroke="#1565C0" stroke-width="1.8" marker-end="url(#arrow-blue)"/>
+  <text x="118" y="230" font-size="9" fill="#1565C0" font-weight="bold">HTTPS 443</text>
+
+  <!-- IGW → ALB AZ-a -->
+  <path d="M190,112 L310,250" fill="none" stroke="#1565C0" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+
+  <!-- IGW → ALB AZ-c -->
+  <path d="M190,112 L310,570" fill="none" stroke="#1565C0" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow-blue)"/>
+
+  <!-- ALB-a → ECS-a -->
+  <path d="M380,290 L450,287" fill="none" stroke="#EF6C00" stroke-width="2" marker-end="url(#arrow-orange)"/>
+  <text x="405" y="278" font-size="9" fill="#EF6C00" font-weight="bold">:8000</text>
+
+  <!-- ALB-c → ECS-c -->
+  <path d="M380,605 L450,605" fill="none" stroke="#EF6C00" stroke-width="2" marker-end="url(#arrow-orange)"/>
+  <text x="405" y="598" font-size="9" fill="#EF6C00" font-weight="bold">:8000</text>
+
+  <!-- ECS-a → RDS Primary -->
+  <path d="M590,287 L740,295" fill="none" stroke="#C62828" stroke-width="2" marker-end="url(#arrow-red)"/>
+  <text x="650" y="280" font-size="9" fill="#C62828" font-weight="bold">:5432</text>
+
+  <!-- ECS-c → RDS Primary -->
+  <path d="M590,605 L830,340" fill="none" stroke="#C62828" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arrow-red)"/>
+  <text x="700" y="470" font-size="9" fill="#C62828">:5432</text>
+
+  <!-- RDS Primary → RDS Standby (Replication) -->
+  <path d="M830,340 L830,575" fill="none" stroke="#888" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+  <text x="840" y="460" font-size="9" fill="#666" font-style="italic">Replication</text>
+
+  <!-- ECS-a → VPC Endpoints -->
+  <path d="M520,330 L520,345" fill="none" stroke="#E65100" stroke-width="1.2" marker-end="url(#arrow-orange)"/>
+
+  <!-- VPC Endpoints → External services (dashed) -->
+  <path d="M590,380 L1020,290" fill="none" stroke="#999" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+  <path d="M590,390 L1020,380" fill="none" stroke="#999" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+  <path d="M590,400 L1020,462" fill="none" stroke="#999" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+  <!-- GitHub → IAM (OIDC) -->
+  <path d="M120,712 L1020,542" fill="none" stroke="#4527A0" stroke-width="1.5" marker-end="url(#arrow-purple)"/>
+  <text x="530" y="638" font-size="9" fill="#4527A0" font-weight="bold">OIDC</text>
+
+  <!-- GitHub → ECR (docker push) -->
+  <path d="M120,700 L1020,295" fill="none" stroke="#4527A0" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#arrow-purple)"/>
+  <text x="450" y="520" font-size="8" fill="#4527A0">docker push</text>
+
+  <!-- GitHub → S3 (deploy) -->
+  <path d="M100,680 L1020,202" fill="none" stroke="#4527A0" stroke-width="1.2" stroke-dasharray="4,2" marker-end="url(#arrow-purple)"/>
+  <text x="400" y="460" font-size="8" fill="#4527A0">aws s3 sync</text>
+
+  <!-- ===== Legend ===== -->
+  <rect x="20" y="800" width="400" height="70" rx="4" fill="#ECEFF1" stroke="#455A64" stroke-width="1"/>
+  <text x="35" y="820" font-size="10" font-weight="bold" fill="#263238">🛡️ Security Groups (多層防御)</text>
+  <text x="35" y="838" font-size="9" fill="#455A64">ALB SG: Ingress 443 from 0.0.0.0/0</text>
+  <text x="35" y="853" font-size="9" fill="#455A64">ECS SG: Ingress 8000 from ALB-SG only</text>
+  <text x="240" y="838" font-size="9" fill="#455A64">RDS SG: Ingress 5432 from ECS-SG only</text>
+  <text x="240" y="853" font-size="9" fill="#455A64">VPCE SG: Ingress 443 from VPC CIDR</text>
+  <text x="35" y="865" font-size="8" fill="#888">※ インターネットからRDS/ECSへの直接アクセスは不可</text>
+
+  <!-- Color Legend -->
+  <rect x="450" y="800" width="300" height="70" rx="4" fill="#FAFAFA" stroke="#CCC" stroke-width="1"/>
+  <text x="465" y="818" font-size="9" font-weight="bold" fill="#333">サブネット凡例:</text>
+  <rect x="465" y="825" width="12" height="12" fill="#E8F5E9" stroke="#2E7D32"/>
+  <text x="482" y="835" font-size="9" fill="#333">Public (ALB / IGW 接続)</text>
+  <rect x="465" y="843" width="12" height="12" fill="#FFF8E1" stroke="#EF6C00"/>
+  <text x="482" y="853" font-size="9" fill="#333">Private (ECS / インターネット非接続)</text>
+  <rect x="465" y="861" width="12" height="12" fill="#FCE4EC" stroke="#C62828"/>
+  <text x="482" y="871" font-size="9" fill="#333">Database (RDS / 完全隔離)</text>
+</svg>

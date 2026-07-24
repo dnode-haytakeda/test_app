@@ -1,8 +1,12 @@
 # infrastructure/modules/rds/main.tf
 
 resource "aws_db_subnet_group" "main" {
-  name       = "${var.production}-db-subnet-group"
+  name       = "${var.project_name}-db-subnet-group"
   subnet_ids = var.database_subnet_ids
+
+  tags = {
+    Name = "${var.project_name}-db-subnet-group"
+  }
 }
 
 resource "aws_security_group" "rds" {
@@ -14,7 +18,7 @@ resource "aws_security_group" "rds" {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [var.esc_security_group_id]
+    security_groups = [var.ecs_security_group_id]
     description     = "PostgreSQL from ECS"
   }
 
@@ -24,27 +28,31 @@ resource "aws_security_group" "rds" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = {
+    Name = "${var.project_name}-rds-sg"
+  }
 }
 
 resource "aws_db_instance" "main" {
-  indentifier = "{$var.project_name}-db"
+  identifier = "${var.project_name}-db"
 
   engine         = "postgres"
-  engine_version = "16.4"
+  engine_version = "16"
   instance_class = var.db_instance_class
 
-  allocated_storage     = var.db.allocated_storage
+  allocated_storage     = var.db_allocated_storage
   max_allocated_storage = var.db_max_storage
   storage_type          = "gp3"
   storage_encrypted     = true
 
   db_name                     = var.db_name
   username                    = var.db_username
-  manage_master_user_password = ture # Secrets Manager で自動管理
+  manage_master_user_password = true
 
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
-  publicly_accessible    = false # 重要
+  publicly_accessible    = false
 
   multi_az = var.multi_az
 
@@ -52,10 +60,10 @@ resource "aws_db_instance" "main" {
   backup_window           = "03:00-04:00"
   maintenance_window      = "sun:04:00-sun:05:00"
 
-  deletion_protection = var.environment == "prod" ? ture : false
-  skip_final_snapshot = var.environment == "prod" ? false : ture
+  deletion_protection = var.environment == "production" ? true : false
+  skip_final_snapshot = var.environment == "production" ? false : true
 
-  performance_insights_enabled = ture
+  performance_insights_enabled = true
 
   tags = {
     Name        = "${var.project_name}-db"

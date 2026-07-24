@@ -1,0 +1,17 @@
+# .github/workflows/reusable-docker-build.yml（テンプレート側）
+on: 
+  workflow_call:
+    inputs:
+      context:
+        required: true
+        type: string
+    secrets:
+      aws_role_arn:
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build ${{ inputs.context }}

@@ -1,4 +1,5 @@
 # infrastructure/modules/ecs/main.tf
+# ECS Fargate クラスタ + タスク定義 + サービス + IAM ロール
 
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
@@ -6,6 +7,11 @@ resource "aws_ecs_cluster" "main" {
   setting {
     name  = "containerInsights"
     value = "enabled"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-cluster"
+    Environment = var.environment
   }
 }
 
@@ -85,6 +91,10 @@ resource "aws_security_group" "ecs" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = {
+    Name = "${var.project_name}-ecs-sg"
+  }
 }
 
 # --- タスク定義 ---
@@ -141,7 +151,7 @@ resource "aws_ecs_task_definition" "backend" {
     }
 
     healthCheck = {
-      command     = ["CMD-SHELL", "python -c \"import httpx; r = httpx.get('http://localhost:8000/api/health/live'); r.raise_for_status()\""]
+      command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/live')\""]
       interval    = 30
       timeout     = 5
       retries     = 3
@@ -170,56 +180,8 @@ resource "aws_ecs_service" "backend" {
     container_port   = 8000
   }
 
-  deployment_configuration {
-    maximum_percent         = 200
-    minimum_healthy_percent = 100
-  }
+  deployment_maximum_percent         = 200
+  deployment_minimum_healthy_percent = 100
 
   health_check_grace_period_seconds = 60
-}
-
-# ALB: インターネットから HTTPS のみ受け入れ
-resource "aws_security_group" "alb" {
-  name   = "${var.project_name}-alb"
-  vpc_id = aws_vpc.main.id
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# ECS: ALB からのみ受け入れ
-resource "aws_security_group" "ecs" {
-  name   = "${var.project_name}-ecs"
-  vpc_id = aws_vpc.main.id
-
-  ingress {
-    from_port       = 8000
-    to_port         = 8000
-    protocol        = "tcp"
-    security_groups = [aws_security_gropu.alb.id]
-  }
-}
-
-# RDS: ECS からのみ受け入れ
-resource "aws_security_group" "rds" {
-  name   = "${var.project_name}-rds"
-  vpc_id = aws_vpc.main.id
-
-  ingress {
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.ecs.id]
-  }
 }

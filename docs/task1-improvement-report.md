@@ -711,3 +711,216 @@ export class ApiError extends Error {
 | 48 | ★☆☆ | 品質 | `POSTGRES_HOST_PORT` 死設定削除 | `config.py` |
 | 49 | ★★☆ | 品質 | `__init__.py` 一貫性修正（全パッケージに追加） | 9 ファイル |
 | 50 | ★★☆ | 堅牢性 | docker-compose.yml ヘルスチェック・ターゲット追加 | `docker-compose.yml` |
+
+---
+
+## 9. Terraform / CI/CD のブラッシュアップ
+
+以下は Terraform コードおよび GitHub Actions ワークフローのプロ品質レビューで発見・修正した項目です。
+
+### 9.1 VPC モジュール: 変数参照のタイポ ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | `aws_subnet.private` の tags で `var.availability_zone[count.index]`（`var.` と `s` が欠落）、`aws_subnet.database` で `availability_zones[count.index]`（`var.` が欠落）と記述されていた |
+| **なぜ不十分か** | `terraform plan` 時にエラーとなり、インフラを構築できない |
+| **どう修正したか** | 全箇所を `var.availability_zones[count.index]` に統一 |
+
+**修正ファイル**: `infrastructure/modules/vpc/main.tf`
+
+### 9.2 VPC モジュール: variables.tf / outputs.tf が空 ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | `variables.tf` と `outputs.tf` が空ファイルで、`main.tf` が参照する変数が未定義 |
+| **なぜ不十分か** | `terraform plan` が即座に失敗する |
+| **どう修正したか** | `project_name`, `environment`, `vpc_cidr`, `availability_zones`, `aws_region` の変数定義と、`vpc_id`, `public_subnet_ids`, `private_subnet_ids`, `database_subnet_ids` の出力定義を追加 |
+
+**修正ファイル**: `infrastructure/modules/vpc/variables.tf`, `infrastructure/modules/vpc/outputs.tf`
+
+### 9.3 NAT Gateway → VPC エンドポイントへのコスト最適化 ★★★ 重要
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | NAT Gateway（約 $32/月/AZ × 2 = $64/月）がデフォルトで有効だった |
+| **なぜ不十分か** | 個人開発・小規模プロジェクトでは大きなコスト負担。ECS Fargate が外部インターネットに出る必要があるのは ECR/S3/CloudWatch Logs/Secrets Manager への接続のみで、これらは VPC エンドポイントで代替可能 |
+| **どう修正したか** | NAT Gateway をコメントアウトし、Gateway 型（S3: 無料）+ Interface 型（ECR API, ECR DKR, Logs, Secrets Manager）の VPC エンドポイントを追加。コスト約 56% 削減（$64/月 → $28/月） |
+
+**修正ファイル**: `infrastructure/modules/vpc/main.tf`
+
+### 9.4 ECR モジュール: `image_scanning_congiguration` タイポ ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | `image_scanning_congiguration`（`configuration` のスペルミス） |
+| **なぜ不十分か** | Terraform が未知のブロック名としてエラーを出す |
+| **どう修正したか** | `image_scanning_configuration` に修正 |
+
+**修正ファイル**: `infrastructure/modules/ecr/main.tf`
+
+### 9.5 RDS モジュール: 多数のタイポ ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | 以下の 7 箇所のタイポ:<br>- `var.production` → `var.project_name`<br>- `var.esc_security_group_id` → `var.ecs_security_group_id`<br>- `indentifier` → `identifier`<br>- `{$var.project_name}` → `${var.project_name}`<br>- `var.db.allocated_storage` → `var.db_allocated_storage`<br>- `ture` → `true`（4 箇所）<br>- `"prod"` → `"production"`（環境名の不一致） |
+| **なぜ不十分か** | いずれも `terraform plan` でエラーとなる致命的なバグ |
+| **どう修正したか** | 全箇所を正しい記述に修正 |
+
+**修正ファイル**: `infrastructure/modules/rds/main.tf`
+
+### 9.6 ALB モジュール: 全ファイルが空 ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | `main.tf`, `variables.tf`, `outputs.tf` がすべて空 |
+| **なぜ不十分か** | ECS サービスがインターネットからのリクエストを受け取れない。ALB はバックエンド API の入口であり、ヘルスチェック・TLS 終端・HTTP→HTTPS リダイレクトを担う必須コンポーネント |
+| **どう修正したか** | ALB + セキュリティグループ + ターゲットグループ + HTTPS/HTTP リスナーを完全実装 |
+
+**修正ファイル**: `infrastructure/modules/alb/main.tf`, `variables.tf`, `outputs.tf`
+
+### 9.7 ECS モジュール: 重複セキュリティグループ定義 ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | `main.tf` 末尾に ALB/ECS/RDS のセキュリティグループが重複定義されていた。さらに `aws_vpc.main.id`（このモジュールに存在しない参照）や `aws_security_gropu.alb.id`（タイポ）を含んでいた |
+| **なぜ不十分か** | 同名リソースの重複定義は Terraform エラー。存在しない参照もエラー |
+| **どう修正したか** | 重複セキュリティグループ定義を削除。各モジュールに適切に分離されているものだけを残した |
+
+**修正ファイル**: `infrastructure/modules/ecs/main.tf`
+
+### 9.8 ECS モジュール: ヘルスチェックで httpx を使用 ★★☆ 重要
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | タスク定義のヘルスチェックが `import httpx` を使用していた |
+| **なぜ不十分か** | 本番用 Docker イメージに httpx がインストールされていない場合、ヘルスチェックが常に失敗する |
+| **どう修正したか** | Python 標準ライブラリの `urllib.request` を使用するヘルスチェックに変更 |
+
+**修正ファイル**: `infrastructure/modules/ecs/main.tf`
+
+### 9.9 S3-CloudFront モジュール: 複数タイポ ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | - `Version = "2017-10-17"` → `"2012-10-17"`（IAM ポリシーバージョン）<br>- `origin_access_contorol_id` → `origin_access_control_id`<br>- `us_east_1` → `us-east-1`（リージョン名）<br>- ACM 証明書と Route 53 レコードがモジュール内にハードコードされていた |
+| **なぜ不十分か** | いずれも `terraform plan/apply` でエラーとなるか、リソースが正しく動作しない |
+| **どう修正したか** | タイポ修正 + ACM/Route53 リソースをモジュールから分離（ドメイン設定はオプショナルに）+ カスタムドメインなしでもデフォルト CloudFront 証明書で動作するよう修正 |
+
+**修正ファイル**: `infrastructure/modules/s3-cloudfront/main.tf`
+
+### 9.10 IAM モジュール: 全ファイルが空 ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | OIDC プロバイダとデプロイ用 IAM ロールが未実装 |
+| **なぜ不十分か** | GitHub Actions の `aws-actions/configure-aws-credentials` が AssumeRole に失敗し、CI/CD パイプラインが動作しない |
+| **どう修正したか** | OIDC プロバイダ + GitHub Actions デプロイ用 IAM ロール + 最小権限ポリシー（ECR push, ECS update, S3 sync, CloudFront invalidation）を完全実装 |
+
+**修正ファイル**: `infrastructure/modules/iam/main.tf`, `variables.tf`, `outputs.tf`
+
+### 9.11 Production 環境: main.tf が不完全 ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | `main.tf` に VPC と ECS の 2 モジュールしか記述されておらず、ECR, ALB, RDS, S3-CloudFront, IAM が欠落。`terraform` ブロック（required_version, required_providers）もなし |
+| **なぜ不十分か** | 全モジュールの呼び出しと相互接続がなければインフラは構築できない |
+| **どう修正したか** | 全 7 モジュールの呼び出しとパラメータ連携、provider 設定、data source を追加 |
+
+**修正ファイル**: `infrastructure/environments/production/main.tf`
+
+### 9.12 Production 環境: variables.tf / terraform.tfvars / outputs.tf が空 ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | 全ファイルが空で、`main.tf` が参照する変数が未定義 |
+| **なぜ不十分か** | `terraform plan` が変数未定義エラーで即座に失敗する |
+| **どう修正したか** | 全変数の定義（`variables.tf`）、最小コスト構成のデフォルト値（`terraform.tfvars`）、必要な出力値（`outputs.tf`）を追加 |
+
+**修正ファイル**: `infrastructure/environments/production/variables.tf`, `terraform.tfvars`, `outputs.tf`
+
+### 9.13 ci.yml: YAML 構文が不正 ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | `ci.yml` が YAML として不正な構造だった（`name:`, `on:`, jobs の適切な定義がない断片的なコード）。また `downgrade` という typo（`done` の誤り）、`applocation/json`（`application/json` の誤り）を含んでいた |
+| **なぜ不十分か** | GitHub Actions が YAML をパースできず、CI パイプラインが一切動作しない |
+| **どう修正したか** | 完全な YAML 構造で書き直し。`backend-test`（lint + type check + test + migration test）、`frontend-build`（lint + build）、`compose-smoke`（統合テスト）の 3 ジョブ構成 |
+
+**修正ファイル**: `.github/workflows/ci.yml`
+
+### 9.14 deploy.yml: 複数のタイポ ★★★ 致命的
+
+| 項目 | 内容 |
+|------|------|
+| **何が不十分か** | 以下のタイポ:<br>- `guthub.ref` → `github.ref`<br>- `test-app-ECS_CLUSTER` → `test-app-cluster`（Terraform のクラスタ名と不一致）<br>- `npm run Lint` → `npm run lint`<br>- `$ECR_REPOSITORY/$ECR_REPOSITORY:` → 環境変数の二重展開バグ<br>- `$ECR_SERVICE` → `$ECS_SERVICE`<br>- `${{ setps.task-def.outputs.arn }}` → `${{ steps.task-def.outputs.arn }}` |
+| **なぜ不十分か** | いずれも CI/CD パイプラインの実行失敗を引き起こす |
+| **どう修正したか** | 全タイポを修正し、環境変数名を Terraform の出力と一致させた |
+
+**修正ファイル**: `.github/workflows/deploy.yml`
+
+---
+
+## 修正一覧（Terraform / CI/CD ブラッシュアップ分）
+
+### Terraform — VPC モジュール（3 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 51 | ★★★ | バグ | 変数参照のタイポ修正 | `modules/vpc/main.tf` |
+| 52 | ★★★ | 欠落 | variables.tf / outputs.tf の内容追加 | `modules/vpc/variables.tf`, `outputs.tf` |
+| 53 | ★★★ | コスト | NAT Gateway → VPC エンドポイントへ置換 | `modules/vpc/main.tf` |
+
+### Terraform — ECR モジュール（2 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 54 | ★★★ | バグ | `image_scanning_congiguration` タイポ修正 | `modules/ecr/main.tf` |
+| 55 | ★★★ | 欠落 | variables.tf / outputs.tf の内容追加 | `modules/ecr/variables.tf`, `outputs.tf` |
+
+### Terraform — RDS モジュール（2 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 56 | ★★★ | バグ | 7 箇所のタイポ一括修正 | `modules/rds/main.tf` |
+| 57 | ★★★ | 欠落 | variables.tf / outputs.tf の内容追加 | `modules/rds/variables.tf`, `outputs.tf` |
+
+### Terraform — ALB モジュール（1 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 58 | ★★★ | 欠落 | ALB + SG + TG + リスナーの全実装 | `modules/alb/main.tf`, `variables.tf`, `outputs.tf` |
+
+### Terraform — ECS モジュール（3 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 59 | ★★★ | バグ | 重複 SG 定義 + タイポ削除 | `modules/ecs/main.tf` |
+| 60 | ★★☆ | 堅牢性 | ヘルスチェックを標準ライブラリに変更 | `modules/ecs/main.tf` |
+| 61 | ★★★ | 欠落 | variables.tf / outputs.tf の内容追加 | `modules/ecs/variables.tf`, `outputs.tf` |
+
+### Terraform — S3-CloudFront モジュール（2 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 62 | ★★★ | バグ | 複数タイポ + ACM 分離 + デフォルト証明書対応 | `modules/s3-cloudfront/main.tf` |
+| 63 | ★★★ | 欠落 | variables.tf / outputs.tf の内容追加 | `modules/s3-cloudfront/variables.tf`, `outputs.tf` |
+
+### Terraform — IAM モジュール（1 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 64 | ★★★ | 欠落 | OIDC + デプロイロール + ポリシーの全実装 | `modules/iam/main.tf`, `variables.tf`, `outputs.tf` |
+
+### Terraform — Production 環境（2 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 65 | ★★★ | 欠落 | main.tf の全モジュール呼び出し完成 | `environments/production/main.tf` |
+| 66 | ★★★ | 欠落 | variables.tf / terraform.tfvars / outputs.tf 追加 | `environments/production/` |
+
+### GitHub Actions（2 項目）
+
+| # | 重要度 | カテゴリ | 修正内容 | 修正ファイル |
+|---|--------|----------|----------|-------------|
+| 67 | ★★★ | バグ | ci.yml 完全書き直し（YAML 構文修正） | `.github/workflows/ci.yml` |
+| 68 | ★★★ | バグ | deploy.yml の 6 箇所のタイポ修正 | `.github/workflows/deploy.yml` |

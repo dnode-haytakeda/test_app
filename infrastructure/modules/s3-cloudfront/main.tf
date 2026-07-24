@@ -1,7 +1,13 @@
 # infrastructure/modules/s3-cloudfront/main.tf
+# S3 + CloudFront でフロントエンド SPA を配信
 
 resource "aws_s3_bucket" "frontend" {
   bucket = "${var.project_name}-frontend-${var.environment}"
+
+  tags = {
+    Name        = "${var.project_name}-frontend"
+    Environment = var.environment
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "frontend" {
@@ -17,7 +23,7 @@ resource "aws_s3_bucket_policy" "frontend" {
   bucket = aws_s3_bucket.frontend.id
 
   policy = jsonencode({
-    Version = "2017-10-17"
+    Version = "2012-10-17"
     Statement = [{
       Sid       = "AllowCloudFrontOAC"
       Effect    = "Allow"
@@ -43,12 +49,12 @@ resource "aws_cloudfront_origin_access_control" "frontend" {
 resource "aws_cloudfront_distribution" "frontend" {
   enabled             = true
   default_root_object = "index.html"
-  aliases             = [var.domain_name]
+  aliases             = var.domain_name != "" ? [var.domain_name] : []
 
   origin {
-    domain_name               = aws_s3_bucket.frontend.bucket_regional_domain_name
-    origin_id                 = "s3-frontend"
-    origin_access_contorol_id = aws_cloudfront_origin_access_control.frontend.id
+    domain_name              = aws_s3_bucket.frontend.bucket_regional_domain_name
+    origin_id                = "s3-frontend"
+    origin_access_control_id = aws_cloudfront_origin_access_control.frontend.id
   }
 
   default_cache_behavior {
@@ -82,48 +88,19 @@ resource "aws_cloudfront_distribution" "frontend" {
   }
 
   viewer_certificate {
-    acm_certificate_arn      = var.certificate_arn
-    ssl_support_method       = "sni-only"
-    minimum_protocol_version = "TLSv1.2_2021"
+    # カスタムドメインが未設定の場合はデフォルト証明書を使用
+    cloudfront_default_certificate = var.certificate_arn == "" ? true : false
+    acm_certificate_arn            = var.certificate_arn != "" ? var.certificate_arn : null
+    ssl_support_method             = var.certificate_arn != "" ? "sni-only" : null
+    minimum_protocol_version       = "TLSv1.2_2021"
   }
 
   restrictions {
     geo_restriction { restriction_type = "none" }
   }
-}
 
-# ACM 証明書（CloudFront 用: 必ず us-east-1）
-provider "aws" {
-  alias  = "us_east_1"
-  region = "us_east_1"
-}
-
-resource "aws_acm_certificate" "frontend" {
-  provider          = aws.us_east_1
-  domain_name       = var.domain_name
-  validation_method = "DNS"
-
-  subject_alternative_names = ["*.${var.domain_name}"]
-
-  lifecycle {
-    create_before_destroy = true
+  tags = {
+    Name        = "${var.project_name}-cdn"
+    Environment = var.environment
   }
-}
-
-# DNS 検証レコード
-resource "aws_route53_record" "cert_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.frontend.domain_validation_options :
-    dvo.domain_name => {
-      name   = dvo.resource_record_name
-      record = dvo.resource_record_value
-      type   = dvo.resource_record_type
-    }
-  }
-
-  zone_id = var.hosted_zone_id
-  name    = each.value.name
-  type    = each.value.type
-  ttl     = 60
-  records = [each.value.record]
 }
